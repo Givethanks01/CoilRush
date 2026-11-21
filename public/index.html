@@ -1,0 +1,298 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Coil Rush</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Figtree:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffb36b"/><stop offset="1" stop-color="#ff5d8f"/></linearGradient></defs><path d="M8 22c-3-5-1-13 7-14s10 6 8 10-7 4-8 1 2-5 4-3" fill="none" stroke="url(#lg)" stroke-width="4" stroke-linecap="round"/><circle cx="25" cy="25" r="3" fill="#ff7a8c"/></svg>
+      <span>Coil Rush</span>
+    </div>
+    <div class="top-right">
+      <span class="online" id="online" hidden><i></i><b id="onlineText">1 here</b></span>
+      <button class="acct-btn" id="acctBtn" hidden aria-haspopup="dialog"><span class="acct-ava" id="acctAva" aria-hidden="true"></span><span id="acctName">Sign in</span></button>
+      <span class="streak" id="streak" hidden title="Days in a row with at least one run"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2c1 4 5 6 5 11a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5 0 2 1 3 2 3 0-3-1-6 1-9.5z" fill="currentColor"/></svg><b id="streakN">1</b></span>
+      <div class="player" title="Your level">
+        <span class="lvl" id="pLevel">Lv 1</span>
+        <div class="xpbar"><i id="pXp"></i></div>
+      </div>
+      <div class="audio-wrap">
+        <button class="icon-btn" id="audioBtn" aria-label="Options" aria-expanded="false" aria-controls="audioPanel" title="Options">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </button>
+        <div class="audio-panel" id="audioPanel" hidden>
+          <p class="ap-title">Options</p>
+          <p class="ap-section">Sound</p>
+          <div class="ap-row">
+            <button class="ap-toggle" id="musicBtn" aria-label="Turn music off" aria-pressed="false" title="Music on/off (N)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l11-2v13" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="17.5" cy="16" r="2.5" fill="currentColor"/><path class="slash" d="M3 3l18 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+            </button>
+            <label for="musicVol">Music</label>
+            <input type="range" id="musicVol" min="0" max="100" step="1" value="70">
+            <output id="musicVolOut" for="musicVol">70</output>
+          </div>
+          <div class="ap-row">
+            <button class="ap-toggle" id="soundBtn" aria-label="Turn sound effects off" aria-pressed="false" title="Sound effects on/off (M)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path class="wave" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path class="slash" d="M16 9l6 6M22 9l-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+            <label for="sfxVol">Effects</label>
+            <input type="range" id="sfxVol" min="0" max="100" step="1" value="80">
+            <output id="sfxVolOut" for="sfxVol">80</output>
+          </div>
+          <p class="ap-hint"><kbd>N</kbd> mutes music · <kbd>M</kbd> mutes effects</p>
+          <p class="ap-section sep">On-screen controls</p>
+            <div class="ctl-pick" role="radiogroup" aria-label="On-screen controls">
+              <button role="radio" data-ctl="dpad" aria-checked="true">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6v6h6v6h-6v6H9v-6H3V9h6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>D-pad</button>
+              <button role="radio" data-ctl="stick" aria-checked="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="14" cy="10" r="3.5" fill="currentColor"/></svg>Joystick</button>
+              <button role="radio" data-ctl="turn" aria-checked="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7H5V3M5 7a8 8 0 1 1-1 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Turn</button>
+            </div>
+          <p class="ap-hint" id="ctlHint">Shown under the board on touch screens. Keyboard and swipe always work.</p>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="arena" aria-label="Game">
+      <div class="hud">
+        <div class="stat"><span class="label">Score</span><b id="hScore">0</b></div>
+        <div class="combo" id="hCombo" data-hot="false">
+          <div class="ring" id="hRing"></div>
+          <b id="hMult">×1</b>
+          <span class="label">Combo</span>
+        </div>
+        <div class="stat"><span class="label" id="hSpeedLabel">Speed</span><b id="hSpeed">1</b></div>
+        <div class="stat"><span class="label">Best</span><b id="hBest">0</b></div>
+        <button class="play-btn" id="btnPlay" aria-label="Play" title="Play / pause (Space)">
+          <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" fill="currentColor"/></svg>
+          <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4.2" height="14" rx="1.3" fill="currentColor"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.3" fill="currentColor"/></svg>
+        </button>
+      </div>
+
+      <div class="board-wrap" id="boardWrap">
+        <canvas id="board" aria-label="Game board"></canvas>
+        <div class="fx-chips" id="fxChips"></div>
+        <div class="toasts" id="toasts" aria-live="polite"></div>
+        <div class="count" id="count" hidden></div>
+
+        <div class="overlay" id="ovMenu">
+          <div class="menu-inner">
+            <h1 class="wordmark">Coil <span>Rush</span></h1>
+            <p class="tagline">Eat fast, chain combos, dodge the rocks.</p>
+            <div class="modes">
+              <button class="mode" data-mode="endless">
+                <span class="mode-name">Endless</span>
+                <span class="mode-desc">Walls bite. Rocks drop as you speed up.</span>
+                <span class="mode-best">Best <i data-best="endless">0</i></span>
+              </button>
+              <button class="mode" data-mode="daily">
+                <span class="mode-name">Daily Run <em>Today</em></span>
+                <span class="mode-desc">Same seed for every player today.</span>
+                <span class="mode-best">Today <i data-best="daily">0</i></span>
+              </button>
+              <button class="mode" data-mode="levels">
+                <span class="mode-name">Levels <em class="new">15</em></span>
+                <span class="mode-desc">Clear a maze to unlock the next one.</span>
+                <span class="mode-best">Cleared <i data-best="levels">0/15</i></span>
+              </button>
+              <button class="mode" data-mode="zen">
+                <span class="mode-name">Zen</span>
+                <span class="mode-desc">Edges wrap, no rocks, slower pace.</span>
+                <span class="mode-best">Best <i data-best="zen">0</i></span>
+              </button>
+            </div>
+            <p class="hint">Pick a mode, or press <kbd>Enter</kbd> for <span id="selName">Endless</span></p>
+          </div>
+        </div>
+
+        <div class="overlay" id="ovLevels" hidden>
+          <div class="levels-inner">
+            <div class="levels-head">
+              <button class="btn small-btn" id="btnLevelsBack" aria-label="Back to menu">‹ Back</button>
+              <h2>Levels</h2>
+              <span class="muted" id="starTotal">0 / 45 ★</span>
+            </div>
+            <div class="level-grid" id="levelGrid"></div>
+            <div class="level-info" id="levelInfo">
+              <b id="liName">1 · Open Field</b>
+              <span id="liHint">Warm up. The edges are deadly.</span>
+              <span class="li-meta" id="liMeta">Eat 8 · Best 0</span>
+            </div>
+            <button class="btn primary" id="btnLevelGo">Play level 1 <kbd>Enter</kbd></button>
+          </div>
+        </div>
+
+        <div class="overlay" id="ovPause" hidden>
+          <div class="card small">
+            <p class="eyebrow">Paused</p>
+            <p class="pause-score" id="pScore">0</p>
+            <div class="actions">
+              <button class="btn primary" id="btnResume">Resume <kbd>Space</kbd></button>
+              <button class="btn" id="btnQuit">Quit to menu</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="overlay" id="ovOver" hidden>
+          <div class="card result">
+            <p class="eyebrow" id="rMode">Endless</p>
+            <div class="big-score" id="rScore">0</div>
+            <p class="cause" id="rCause"></p>
+            <div class="stars" id="rStars" hidden aria-label="Stars earned"><span></span><span></span><span></span></div>
+            <span class="pill gold" id="rBest" hidden>New best</span>
+            <dl class="rstats">
+              <div><dt>Length</dt><dd id="rLen">0</dd></div>
+              <div><dt>Max combo</dt><dd id="rCombo">×1</dd></div>
+              <div><dt>Time</dt><dd id="rTime">0s</dd></div>
+              <div><dt>Golden</dt><dd id="rGold">0</dd></div>
+            </dl>
+            <div class="xp-row">
+              <div class="xp-top"><span id="rLvl">Lv 1</span><span id="rXp">+0 XP</span></div>
+              <div class="xpbar big"><i id="rXpBar"></i></div>
+            </div>
+            <ul class="rmissions" id="rMissions"></ul>
+            <div class="actions">
+              <button class="btn primary" id="btnAgain">Play again <kbd>Enter</kbd></button>
+              <button class="btn" id="btnLevels" hidden>All levels</button>
+              <button class="btn" id="btnMenu">Menu</button>
+            </div>
+            <div class="guest-cta" id="rGuest" hidden>
+              <p>Sign in to save this progress and post your scores to the public leaderboard.</p>
+              <button class="btn ghost" id="btnGuestSignIn">Sign in or create an account</button>
+            </div>
+            <div class="coach" id="coach" hidden>
+              <button class="btn ghost" id="btnCoach">Get a tip from the coach</button>
+              <p id="coachText"></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="controls" id="controls">
+        <div class="ctl ctl-dpad" data-for="dpad">
+          <button data-dir="up" aria-label="Up"><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg></button>
+          <button data-dir="left" aria-label="Left"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+          <button data-dir="down" aria-label="Down"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+          <button data-dir="right" aria-label="Right"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        </div>
+
+        <div class="ctl ctl-stick" data-for="stick" id="stickZone" hidden>
+          <div class="stick-base" id="stickBase">
+            <span class="tick t-up"></span><span class="tick t-down"></span><span class="tick t-left"></span><span class="tick t-right"></span>
+            <div class="stick-knob" id="stickKnob"></div>
+          </div>
+          <p class="ctl-help">Touch anywhere here and drag</p>
+        </div>
+
+        <div class="ctl ctl-turn" data-for="turn" hidden>
+          <button data-turn="left" aria-label="Turn left"><svg viewBox="0 0 24 24"><path d="M9 5L4 10l5 5"/><path d="M4 10h9a7 7 0 0 1 7 7v2"/></svg><span>Left</span></button>
+          <button data-turn="right" aria-label="Turn right"><svg viewBox="0 0 24 24"><path d="M15 5l5 5-5 5"/><path d="M20 10h-9a7 7 0 0 0-7 7v2"/></svg><span>Right</span></button>
+          <p class="ctl-help">Turns are relative to where the snake is heading</p>
+        </div>
+      </div>
+      <p class="keys-hint"><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd> or <kbd>WASD</kbd> to steer · <kbd>Space</kbd> pause · swipe on touch screens</p>
+    </section>
+
+    <aside class="side">
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tabBtn-missions" aria-selected="true" data-tab="missions">Missions</button>
+        <button role="tab" id="tabBtn-leaders" aria-selected="false" data-tab="leaders">Leaderboard</button>
+        <button role="tab" id="tabBtn-skins" aria-selected="false" data-tab="skins">Skins</button>
+        <button role="tab" id="tabBtn-live" aria-selected="false" data-tab="live" hidden>Live</button>
+      </div>
+
+      <div class="panel" id="tab-missions" role="tabpanel">
+        <div class="panel-head"><h2>Daily missions</h2><span class="muted" id="resetIn">Resets in –</span></div>
+        <ul class="missions" id="missionList"></ul>
+        <p class="note">Missions count in every mode except Zen. Each one pays XP toward your rank and new skins.</p>
+        <dl class="lifetime">
+          <div><dt>Runs</dt><dd id="sGames">0</dd></div>
+          <div><dt>Berries eaten</dt><dd id="sEaten">0</dd></div>
+          <div><dt>Endless best</dt><dd id="sBest">0</dd></div>
+        </dl>
+      </div>
+
+      <div class="panel" id="tab-leaders" role="tabpanel" hidden>
+        <div class="panel-head">
+          <h2>Leaderboard</h2>
+          <div class="seg" role="group" aria-label="Board">
+            <button id="lbDaily" aria-pressed="true">Today</button>
+            <button id="lbAll" aria-pressed="false">All-time</button>
+            <button id="lbLevels" aria-pressed="false" hidden>Levels</button>
+          </div>
+        </div>
+        <ol class="leaders" id="leaderList"></ol>
+        <p class="note" id="leaderNote"></p>
+      </div>
+
+      <div class="panel" id="tab-live" role="tabpanel" hidden>
+        <div class="panel-head"><h2>Live</h2><span class="muted" id="liveUpdated">Connecting…</span></div>
+        <dl class="live-stats">
+          <div><dt>Online now</dt><dd id="lvOnline">–</dd></div>
+          <div><dt>Playing</dt><dd id="lvPlaying">–</dd></div>
+          <div><dt>Players</dt><dd id="lvPlayers">–</dd></div>
+          <div><dt>Runs today</dt><dd id="lvRunsToday">–</dd></div>
+        </dl>
+        <h3 class="sub">Recent runs</h3>
+        <ol class="feed" id="feedList"></ol>
+        <form class="find" id="findForm">
+          <label for="findName" class="sr">Find a player</label>
+          <input id="findName" placeholder="Find a player by username" autocomplete="off" maxlength="16" spellcheck="false">
+          <button class="btn" type="submit">Find</button>
+        </form>
+      </div>
+
+      <div class="panel" id="tab-skins" role="tabpanel" hidden>
+        <div class="panel-head"><h2>Skins</h2><span class="muted" id="skinNext"></span></div>
+        <div class="skins" id="skinGrid"></div>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<div class="modal" id="acctModal" hidden role="dialog" aria-modal="true" aria-labelledby="acctTitle">
+  <div class="sheet">
+    <button class="sheet-x" id="acctClose" aria-label="Close">×</button>
+    <div id="acctOut">
+      <div class="seg wide" role="group" aria-label="Account">
+        <button id="amLogin" aria-pressed="true" type="button">Sign in</button>
+        <button id="amRegister" aria-pressed="false" type="button">Create account</button>
+      </div>
+      <h2 id="acctTitle">Welcome back</h2>
+      <p class="muted" id="acctSub">Sign in to sync your progress across devices and post scores.</p>
+      <form id="acctForm" class="acct-form" novalidate>
+        <label for="acctUser">Username</label>
+        <input id="acctUser" name="username" autocomplete="username" maxlength="16" spellcheck="false" autocapitalize="off" required>
+        <label for="acctPass">Password</label>
+        <input id="acctPass" name="password" type="password" autocomplete="current-password" maxlength="128" required>
+        <p class="form-help" id="acctHelp">3–16 letters, numbers or underscores. Passwords need 6+ characters.</p>
+        <p class="form-err" id="acctErr" role="alert"></p>
+        <button class="btn primary" id="acctSubmit" type="submit">Sign in</button>
+      </form>
+    </div>
+    <div id="acctIn" hidden>
+      <h2>Signed in as <span id="acctMe"></span></h2>
+      <p class="muted">Your rank, missions, skins, level stars and settings are saved to this account.</p>
+      <dl class="pstats" id="acctStats"></dl>
+      <div class="actions"><button class="btn" id="acctProfile">View public profile</button><button class="btn" id="acctLogout">Sign out</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="playerModal" hidden role="dialog" aria-modal="true" aria-labelledby="pmName">
+  <div class="sheet">
+    <button class="sheet-x" id="pmClose" aria-label="Close">×</button>
+    <div class="pm-head"><img id="pmAvatar" alt=""><div><h2 id="pmName">Player</h2><p class="muted" id="pmSince"></p></div></div>
+    <dl class="pstats" id="pmStats"></dl>
+    <p class="form-err" id="pmErr" role="alert"></p>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>

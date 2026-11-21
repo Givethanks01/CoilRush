@@ -1,0 +1,20 @@
+# Netlify config for Coil Rush. The site is static (public/); the API is one function.
+[build]
+  publish = "public"
+  command = "echo 'No build step: static site + one function'"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"
+
+[[headers]]
+  for = "/src/*"
+  [headers.values]
+    Cache-Control = "public, max-age=300"

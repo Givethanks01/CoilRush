@@ -1,0 +1,875 @@
+// App shell: state machine, game loop, input, HUD, panels. Wires engine + renderer + progress + online.
+import { Game, autopilot } from './game.js';
+import { Renderer } from './render.js';
+import { sfx, unlockAudio, setSound, setMusic, setMood, suspendAudio, setVolumes } from './audio.js';
+import { LEVELS, starsFor } from './levels.js';
+import * as P from './progress.js';
+import { initOnline, avatarFor } from './online.js';
+import { SKINS, POWER_INFO, MODES } from './config.js';
+import { dayKey, hashStr, msUntilReset } from './rng.js';
+
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+// ---------- state ----------
+// Progress lives in a separate local slot per signed-in account, so two people sharing a
+// device never get each other's progress. Guests use the guest slot.
+try { const a = JSON.parse(localStorage.getItem('coilrush.auth') || 'null'); if (a && a.user && a.user.id) P.useKey(P.keyFor(a.user)); } catch (e) {}
+let profile = P.loadLocal();
+let missions = P.ensureDay(profile);
+setSound(profile.sound);
+if (profile.music === undefined) profile.music = true;
+setMusic(profile.music);
+setVolumes(profile.musicVol / 100, profile.sfxVol / 100);
+let online = null, onlineChecked = false;
+
+const renderer = new Renderer($('board'));
+let state = 'menu';          // menu | select | ready | playing | paused | dying | over
+let curLevel = 1, selLevel = 1, levelResult = null;
+let selMode = 'endless';
+let game = null, mode = 'endless';
+let demo = new Game('demo', (Math.random() * 2 ** 32) >>> 0);
+let acc = 0, runTime = 0, readyT = 0, readyDur = 1050, dyingT = 0, overAt = 0, last = performance.now();
+let runMissions = [];        // missions completed during this run
+let xpBefore = 0, runStreakXp = 0;
+
+const skin = () => SKINS.find(s => s.id === profile.skin) || SKINS[0];
+const ranked = m => m === 'endless' || m === 'daily';       // leaderboard
+const missionMode = m => m !== 'zen';                       // missions count
+const fmtTime = s => (s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.floor(s % 60)).padStart(2, '0')}s` : `${Math.floor(s)}s`);
+const haptic = ms => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {} };
+const yesterdayKey = () => dayKey(new Date(Date.now() - 864e5));
+const dailyBest = () => (profile.dailyDay === dayKey() ? profile.dailyBest : 0);
+
+// ---------- flow ----------
+function show(id, on) { $(id).hidden = !on; }
+function setState(s) {
+  const prevState = state;
+  state = s;
+  if (s === 'over') overAt = performance.now();
+  if (s === 'paused' && prevState === 'playing') sfx.pause();
+  if (s === 'playing' && prevState === 'paused') sfx.resume();
+  setMood(s === 'menu' || s === 'select' ? 'menu' : s === 'paused' ? 'paused' : s === 'over' || s === 'dying' ? 'over' : game && game.fever > 0 ? 'fever' : 'play', game ? game.level : 1);
+  const pb = $('btnPlay');
+  const pausing = s === 'playing' || s === 'ready';
+  pb.dataset.mode = pausing ? 'pause' : 'play';
+  pb.setAttribute('aria-label', pausing ? 'Pause' : s === 'paused' ? 'Resume' : s === 'over' ? 'Play again' : 'Play');
+  if (s === 'paused' && game) $('pScore').textContent = game.score.toLocaleString();
+  show('ovMenu', s === 'menu'); show('ovPause', s === 'paused'); show('ovOver', s === 'over'); show('ovLevels', s === 'select');
+  show('count', s === 'ready');
+  online?.setStatus(s === 'playing' || s === 'ready' || s === 'paused' ? 'playing' : 'menu', s === 'menu' ? null : mode);
+}
+
+function start(m, quick = false, level = curLevel) {
+  unlockAudio();
+  mode = m; selMode = m;
+  const seed = m === 'daily' ? hashStr('daily:' + dayKey()) : (Math.random() * 2 ** 32) >>> 0;
+  if (m === 'levels') { curLevel = selLevel = level; game = new Game(m, seed, LEVELS[level - 1]); }
+  else game = new Game(m, seed);
+  levelResult = null;
+  acc = 0; runTime = 0; readyT = 0; readyDur = quick ? 520 : 1050; runMissions = []; xpBefore = profile.xp;
+  renderer.parts = []; renderer.floats = [];
+  $('count').replaceChildren();
+  setState('ready');
+}
+
+function runStats(final) {
+  return {
+    score: game.score, maxCombo: game.stats.maxCombo, goldens: game.stats.goldens, seconds: Math.floor(runTime),
+    powers: game.stats.powers, maxLevel: game.stats.maxLevel, ghostPasses: game.stats.ghostPasses,
+    length: game.snake.length, berries: game.stats.berries, fevers: game.stats.fevers, closeCalls: game.stats.closeCalls,
+    runs: final ? 1 : 0, dailyRuns: final && mode === 'daily' ? 1 : 0,
+  };
+}
+
+function liveMissions() {
+  if (!missionMode(mode)) return;
+  for (const m of P.checkLive(profile, missions, runStats(false))) missionDone(m);
+}
+function missionDone(m) {
+  runMissions.push(m);
+  sfx.mission();
+  toast(`Mission complete · ${m.text} · +${m.xp} XP`, 'mint');
+  renderMissions(); renderPlayer();
+}
+
+function endRun() {
+  const s = runStats(true);
+  if (missionMode(mode)) for (const m of P.commitRun(profile, missions, s)) { runMissions.push(m); }
+  const scoreXp = Math.floor(game.score / (mode === 'zen' ? 10 : 4));
+  profile.xp += scoreXp;
+  const streakXp = P.touchStreak(profile, dayKey(), yesterdayKey());
+  profile.xp += streakXp;
+  runStreakXp = streakXp;
+  profile.games++; profile.eaten += s.berries;
+  let newBest = false;
+  if (mode === 'daily') {
+    if (profile.dailyDay !== dayKey()) { profile.dailyDay = dayKey(); profile.dailyBest = 0; }
+    if (game.score > profile.dailyBest) { newBest = profile.dailyBest > 0 || game.score > 0; profile.dailyBest = game.score; }
+  }
+  if (mode === 'levels') {
+    const L = LEVELS[curLevel - 1], lv = profile.levels, n = String(curLevel);
+    const stars = starsFor(L, game.score, game.won), prevStars = lv.stars[n] || 0, prevBestL = lv.best[n] || 0;
+    const firstClear = game.won && prevStars === 0;
+    let bonus = 0;
+    if (firstClear) bonus += 30 + curLevel * 10;
+    if (stars > prevStars) { bonus += (stars - prevStars) * 15; lv.stars[n] = stars; }
+    if (game.score > prevBestL) { lv.best[n] = game.score; newBest = prevBestL > 0; }
+    const unlockedNext = game.won && curLevel < 15 && lv.unlocked <= curLevel;
+    if (unlockedNext) lv.unlocked = curLevel + 1;
+    profile.xp += bonus;
+    levelResult = { stars, bonus, firstClear, unlockedNext, won: game.won };
+  } else {
+    const prevBest = profile.best[mode] || 0;
+    if (game.score > prevBest) { profile.best[mode] = game.score; if (mode !== 'daily') newBest = prevBest > 0; }
+  }
+  P.saveLocal(profile);
+  online?.saveProfile(profile);
+  const rankNow = P.levelInfo(profile.xp).level;
+  if (ranked(mode)) {
+    const res = online?.submit(mode, game.score, rankNow, profile.skin, Math.floor(runTime));
+    online?.announce(mode, game.score);
+    if (res && res.then) res.then(r => { if (r && r.place && r.place <= 10) toast(`You're #${r.place} on the ${mode === 'daily' ? "today's" : 'all-time'} board!`, 'gold'); });
+  }
+  if (mode === 'levels' && online?.submitLevels) {
+    const lv = profile.levels;
+    online.submitLevels({
+      stars: Object.values(lv.stars).reduce((a, b) => a + b, 0), cleared: Object.values(lv.stars).filter(v => v > 0).length,
+      rank: rankNow, skin: profile.skin, level: curLevel, won: game.won, levelStars: levelResult.stars,
+    });
+  }
+  fillResults(s, newBest, profile.xp - xpBefore);
+  renderAll();
+  setState('over');
+}
+
+const CAUSES = { wall: 'You hit the wall.', self: 'You bit your own tail.', rock: 'You crashed into a rock.' };
+function fillResults(s, newBest, xpGain) {
+  const lvl = mode === 'levels' ? LEVELS[curLevel - 1] : null;
+  $('rMode').textContent = lvl ? `Level ${curLevel} · ${lvl.name}` : MODES[mode].name + (mode === 'daily' ? ` · ${dayKey()}` : '');
+  $('rScore').textContent = game.score.toLocaleString();
+  $('rCause').textContent = lvl && game.won ? 'Level cleared!' : lvl ? `${CAUSES[game.cause] || ''} ${game.eaten} of ${lvl.target} berries eaten.` : CAUSES[game.cause] || '';
+  const starsEl = $('rStars');
+  starsEl.hidden = !lvl;
+  if (lvl) [...starsEl.children].forEach((sp, i) => { sp.classList.toggle('on', i < levelResult.stars); });
+  if (lvl && levelResult.stars) for (let i = 0; i < levelResult.stars; i++) setTimeout(() => sfx.star(i), 250 + i * 180);
+  $('btnLevels').hidden = !lvl;
+  $('btnAgain').firstChild.textContent = lvl ? (game.won && curLevel < 15 ? 'Next level ' : 'Retry ') : 'Play again ';
+  $('rBest').hidden = !newBest;
+  $('rLen').textContent = s.length; $('rCombo').textContent = '×' + s.maxCombo;
+  $('rTime').textContent = fmtTime(s.seconds); $('rGold').textContent = s.goldens;
+  const before = P.levelInfo(xpBefore), after = P.levelInfo(profile.xp);
+  $('rXp').textContent = `+${xpGain} XP`;
+  $('rLvl').textContent = after.level > before.level ? `Rank up! Rank ${after.level}` : `Rank ${after.level}`;
+  const bar = $('rXpBar');
+  bar.style.transition = 'none'; bar.style.width = (after.level > before.level ? 0 : (before.into / before.need) * 100) + '%';
+  requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transition = ''; bar.style.width = (after.into / after.need) * 100 + '%'; }));
+  const list = $('rMissions'); list.replaceChildren();
+  for (const m of runMissions) { const li = el('li'); li.append(el('span', null, '✓ ' + m.text), el('b', null, `+${m.xp}`)); list.append(li); }
+  if (levelResult && levelResult.bonus) { const li = el('li'); li.append(el('span', null, levelResult.firstClear ? `First clear of level ${curLevel}` : 'New stars'), el('b', null, `+${levelResult.bonus}`)); list.append(li); }
+  if (levelResult && levelResult.unlockedNext) { const li = el('li'); li.append(el('span', null, `Level ${curLevel + 1} unlocked: ${LEVELS[curLevel].name}`), el('b', null, '→')); list.append(li); }
+  if (levelResult && levelResult.won && curLevel === 15) { const li = el('li'); li.append(el('span', null, 'You beat all 15 levels!'), el('b', null, '★')); list.append(li); }
+  if (runStreakXp) { const li = el('li'); li.append(el('span', null, `Day ${profile.streak} streak bonus`), el('b', null, `+${runStreakXp}`)); list.append(li); }
+  const unlocked = SKINS.filter(k => k.unlock > before.level && k.unlock <= after.level);
+  for (const k of unlocked) { const li = el('li'); li.append(el('span', null, `New skin unlocked: ${k.name}`), el('b', null, '★')); list.append(li); }
+  $('rGuest').hidden = !(online?.auth && !online.auth.user && mode !== 'zen');
+  $('coachText').textContent = '';
+  $('btnCoach').hidden = false; $('btnCoach').disabled = false;
+}
+
+// ---------- events from the engine ----------
+function handle(events) {
+  const sk = skin(), t = performance.now();
+  for (const e of events) {
+    switch (e.type) {
+      case 'eat':
+        sfx.eat(e.mult); renderer.gulp = 1; haptic(8);
+        renderer.burst(e.x, e.y, '#ff7a8c', 10 + e.mult * 2);
+        renderer.float(e.x, e.y, `+${e.pts}`, e.mult > 1 ? '#ffc94a' : '#ffffff');
+        bumpCombo();
+        break;
+      case 'golden':
+        sfx.golden(); renderer.gulp = 1;
+        renderer.burst(e.x, e.y, '#ffc94a', 26, 1.4);
+        renderer.float(e.x, e.y, `+${e.pts}`, '#ffc94a');
+        break;
+      case 'goldenSpawn': sfx.goldenSpawn(); toast('A golden plum appeared. Grab it before it fades!', 'gold'); break;
+      case 'powerSpawn': sfx.powerSpawn(); break;
+      case 'fxEnd': sfx.fxEnd(); break;
+      case 'rockLand': sfx.rockLand(); renderer.shake = Math.max(renderer.shake, 0.15); break;
+      case 'power': {
+        const info = POWER_INFO[e.kind];
+        sfx.power(); renderer.burst(e.x, e.y, info.color, 22, 1.3); haptic(20);
+        toast(`${info.name}: ${info.desc}`, 'mint');
+        break;
+      }
+      case 'level': sfx.level(); toast(`Speed ${e.level}`); setMood(game.fever > 0 ? 'fever' : 'play', e.level); break;
+      case 'fever':
+        sfx.fever(); setMood('fever', game.level); haptic([20, 40, 20]); renderer.flash = 0.25;
+        toast('FEVER! Double points while it lasts', 'gold');
+        break;
+      case 'feverEnd': sfx.feverEnd(); setMood('play', game.level); toast('Fever over. Build it again!'); break;
+      case 'close':
+        sfx.close(); renderer.float(e.x, e.y, 'Close call +5', '#7af0cf');
+        break;
+      case 'grace': sfx.grace(); haptic(15); renderer.shake = 0.25; break;
+      case 'rock': sfx.rock(); break;
+      case 'comboLost': sfx.lost(); break;
+      case 'phase': sfx.phase(); renderer.burst(e.x, e.y, '#7af0cf', 4, 0.6); break;
+      case 'portal':
+        sfx.portal(); haptic(10);
+        renderer.burst(e.x, e.y, '#c6a2ff', 10, 0.8); renderer.burst(e.tx, e.ty, '#6cb8ff', 10, 0.8);
+        break;
+      case 'clear':
+        sfx.clear(); haptic([30, 50, 30]); renderer.flash = 0;
+        game.snake.forEach((c, i) => { if (i % 2 === 0) renderer.burst(c.x, c.y, i % 4 ? '#ffc94a' : '#7af0cf', 6, 1.4); });
+        toast(`Level ${curLevel} cleared!`, 'gold');
+        dyingT = 0; state = 'dying';
+        break;
+      case 'die':
+        sfx.die(); renderer.explode(game.snake, sk, t); haptic(90);
+        dyingT = 0; state = 'dying';
+        break;
+    }
+  }
+}
+function bumpCombo() { const c = $('hCombo'); c.classList.remove('bump'); void c.offsetWidth; c.classList.add('bump'); }
+
+// ---------- loop ----------
+// One bad frame must never stop the loop: catch, report, pause the run, keep drawing.
+let frameErrors = 0;
+function frame(now) {
+  try { tick(now); frameErrors = 0; }
+  catch (e) {
+    reportError(e, 'frame');
+    if (++frameErrors > 3 && state !== 'menu') { game = null; setState('menu'); renderBests(); toast('Something went wrong, so the run was ended. Your progress is saved.'); frameErrors = 0; }
+    else if (state === 'playing') { setState('paused'); toast('Something went wrong. Press play to keep going.'); }
+  }
+  requestAnimationFrame(frame);
+}
+function tick(now) {
+  const dt = Math.min(100, now - last); last = now;
+  let g = demo, alpha = 0;
+  if (state === 'menu' || state === 'select') {
+    acc += dt;
+    while (acc >= demo.interval()) { acc -= demo.interval(); autopilot(demo); demo.step(); if (!demo.alive) { demo = new Game('demo', (Math.random() * 2 ** 32) >>> 0); acc = 0; } }
+    alpha = acc / demo.interval();
+  } else if (game) {
+    g = game;
+    if (state === 'ready') {
+      const step = readyDur > 600 ? 350 : readyDur;
+      const before = Math.ceil((readyDur - readyT) / step);
+      readyT += dt;
+      const n = Math.ceil((readyDur - readyT) / step);
+      if (n !== before || !$('count').firstChild) {
+        if (n > 0) { $('count').replaceChildren(el('span', null, readyDur > 600 ? String(n) : 'Go!')); sfx.tick(); }
+      }
+      if (readyT >= readyDur) { sfx.go(); acc = 0; setState('playing'); }
+    } else if (state === 'playing') {
+      runTime += dt / 1000; acc += dt;
+      let iv = game.interval();
+      while (acc >= iv && state === 'playing') { acc -= iv; handle(game.step()); iv = game.interval(); }
+      if (state === 'playing') liveMissions();
+      alpha = state === 'playing' ? Math.min(1, acc / iv) : 1;
+    } else if (state === 'dying') {
+      dyingT += dt; alpha = 1;
+      if (dyingT > (game.won ? 1300 : 950)) endRun();
+    } else alpha = state === 'paused' ? Math.min(1, acc / game.interval()) : 1;
+  }
+  renderer.draw(g, alpha, skin(), now, dt, { hideSnake: game && g === game && !game.alive && !game.won });
+  updateHud();
+}
+
+// ---------- crash reporting ----------
+let reported = 0;
+function reportError(e, where) {
+  console.error(e);
+  if (reported >= 5 || !online || online.kind !== 'netlify') return;
+  reported++;
+  fetch('/api/log', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+    message: String(e && e.message || e), stack: String(e && e.stack || ''), where, state, mode,
+  }) }).catch(() => {});
+}
+addEventListener('error', ev => reportError(ev.error || ev.message, 'window'));
+addEventListener('unhandledrejection', ev => reportError(ev.reason, 'promise'));
+
+// ---------- HUD ----------
+const hudCache = {};
+function setText(id, v) { if (hudCache[id] !== v) { hudCache[id] = v; $(id).textContent = v; } }
+function updateHud() {
+  const live = state !== 'menu' && state !== 'select' && game;
+  setText('hScore', live ? game.score.toLocaleString() : '0');
+  const lvMode = live && mode === 'levels';
+  setText('hSpeedLabel', lvMode ? `Level ${curLevel}` : 'Speed');
+  setText('hSpeed', lvMode ? `${game.eaten}/${game.target}` : live ? String(game.level) : '1');
+  const bm = live ? mode : selMode;
+  setText('hBest', (bm === 'levels' ? profile.levels.best[String(live ? curLevel : selLevel)] || 0 : bm === 'daily' ? dailyBest() : profile.best[bm] || 0).toLocaleString());
+  const mult = live ? game.mult : 1;
+  setText('hMult', '×' + mult);
+  const p = live ? Math.max(0, 1 - game.comboT / game.comboWin) : 0;
+  $('hRing').style.setProperty('--p', p.toFixed(3));
+  $('hCombo').dataset.hot = String(mult >= 3);
+  // power-up chips
+  const chips = live ? Object.entries(game.fx).filter(([, v]) => v > 0) : [];
+  const key = chips.map(([k]) => k).join();
+  const box = $('fxChips');
+  if (box.dataset.key !== key) {
+    box.dataset.key = key; box.replaceChildren();
+    for (const [k] of chips) { const c = el('span', 'chip', POWER_INFO[k].name); c.dataset.k = k; c.style.setProperty('--c', POWER_INFO[k].color); box.append(c); }
+  }
+  for (const c of box.children) { const k = c.dataset.k; c.style.setProperty('--p', (game.fx[k] / (k === 'slow' ? 32 : 45)).toFixed(3)); }
+}
+
+// ---------- toasts ----------
+function toast(text, kind = '') {
+  const box = $('toasts');
+  const t = el('div', 'toast ' + kind, text);
+  box.prepend(t);
+  while (box.children.length > 3) box.lastChild.remove();
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 320); }, 2600);
+}
+
+// ---------- side panels ----------
+function renderPlayer() {
+  const li = P.levelInfo(profile.xp);
+  const live = profile.lastDay === dayKey() || profile.lastDay === yesterdayKey();
+  $('streak').hidden = !(live && profile.streak > 0);
+  $('streakN').textContent = profile.streak;
+  $('streak').title = `${profile.streak} day streak. Play every day to keep it.`;
+  $('pLevel').textContent = 'Rank ' + li.level;
+  $('pXp').style.width = (li.into / li.need) * 100 + '%';
+  $('pXp').parentElement.title = `${li.into} / ${li.need} XP to rank ${li.level + 1}`;
+}
+function renderMissions() {
+  const list = $('missionList'); list.replaceChildren();
+  const run = (state === 'playing' || state === 'dying') && game && missionMode(mode) ? runStats(false) : null;
+  for (const m of missions) {
+    const done = !!profile.mission.done[m.id], v = done ? m.target : P.missionValue(profile, m, run);
+    const li = el('li', done ? 'done' : '');
+    const bar = el('div', 'bar'), track = el('span'), fill = el('i');
+    fill.style.width = (v / m.target) * 100 + '%'; track.append(fill);
+    bar.append(track, el('small', null, `${v} / ${m.target}`));
+    li.append(el('span', 'check', done ? '✓' : ''), el('span', 'mtext', m.text), el('span', 'reward', `+${m.xp} XP`), bar);
+    list.append(li);
+  }
+  $('sGames').textContent = profile.games.toLocaleString();
+  $('sEaten').textContent = profile.eaten.toLocaleString();
+  $('sBest').textContent = profile.best.endless.toLocaleString();
+}
+function renderReset() {
+  const ms = msUntilReset(), h = Math.floor(ms / 3.6e6), m = Math.floor((ms % 3.6e6) / 6e4);
+  $('resetIn').textContent = `Resets in ${h}h ${m}m`;
+  if (profile.mission.day !== dayKey() && state !== 'playing') { missions = P.ensureDay(profile); renderMissions(); }
+}
+function renderSkins() {
+  const lvl = P.levelInfo(profile.xp).level, grid = $('skinGrid'); grid.replaceChildren();
+  for (const k of SKINS) {
+    const b = el('button', 'skin' + (k.id === profile.skin ? ' on' : ''));
+    const sw = el('span', 'sw');
+    sw.style.background = `linear-gradient(90deg, ${k.stops.join(', ')})`;
+    b.append(sw, el('span', null, k.name), el('small', null, lvl >= k.unlock ? (k.id === profile.skin ? 'Equipped' : 'Tap to equip') : `Unlocks at Rank ${k.unlock}`));
+    b.disabled = lvl < k.unlock;
+    b.setAttribute('aria-pressed', String(k.id === profile.skin));
+    b.onclick = () => { profile.skin = k.id; P.saveLocal(profile); online?.saveProfile(profile); sfx.click(); renderSkins(); };
+    grid.append(b);
+  }
+  const next = SKINS.find(k => k.unlock > lvl);
+  $('skinNext').textContent = next ? `Next: ${next.name} at Rank ${next.unlock}` : 'All skins unlocked';
+}
+function renderBests() {
+  document.querySelectorAll('[data-best]').forEach(i => {
+    const m = i.dataset.best;
+    i.textContent = m === 'levels' ? `${Object.values(profile.levels.stars).filter(v => v > 0).length}/15`
+      : (m === 'daily' ? dailyBest() : profile.best[m] || 0).toLocaleString();
+  });
+  document.querySelectorAll('.mode').forEach(b => b.classList.toggle('sel', b.dataset.mode === selMode));
+  $('selName').textContent = MODES[selMode].name;
+}
+function renderAll() { renderPlayer(); renderMissions(); renderSkins(); renderBests(); renderBoard(); }
+
+// leaderboard
+const boards = { daily: { state: 'idle', rows: [] }, all: { state: 'idle', rows: [] }, levels: { state: 'idle', rows: [] } };
+let boardTab = 'daily', boardRender = 0;
+async function renderBoard() {
+  const token = ++boardRender;
+  const list = $('leaderList'), note = $('leaderNote'), b = boards[boardTab];
+  if (!online || !online.hasBoard) {
+    list.replaceChildren(el('li', 'empty', !onlineChecked
+      ? 'Connecting to the leaderboard…'
+      : window.claude ? 'The shared leaderboard needs you signed in to claude.ai. Your scores are still saved on this device.'
+        : 'The leaderboard is offline right now. Your scores are still saved on this device.'));
+    note.textContent = '';
+    return;
+  }
+  if (b.state === 'loading' || b.state === 'idle') { list.replaceChildren(el('li', 'empty', 'Loading scores…')); return; }
+  if (b.state === 'error') { list.replaceChildren(el('li', 'empty', 'Scores could not be loaded. Reload the page to try again.')); return; }
+  if (!b.rows || !b.rows.length) {
+    list.replaceChildren(el('li', 'empty', boardTab === 'daily' ? 'No Daily Run scores yet today. Finish one to take #1.' : boardTab === 'levels' ? 'Nobody has cleared a level yet. Be the first.' : 'No Endless scores yet. Finish a run to take #1.'));
+  } else {
+    const ps = await online.profiles(b.rows.map(r => r.id));
+    if (token !== boardRender) return;
+    list.replaceChildren(...b.rows.map((r, i) => {
+      const p = ps[r.id] || {}, me = r.id === online.uid;
+      const li = el('li', me ? 'me' : '');
+      const img = el('img'); img.alt = ''; if (p.avatarUrl) img.src = p.avatarUrl;
+      const who = el('span', 'who', p.name || (me ? 'You' : 'Player'));
+      if (me) who.append(el('small', null, 'you'));
+      const pts = el('span', 'pts', boardTab === 'levels' ? `★ ${r.score}` : r.score.toLocaleString());
+      if (boardTab === 'levels') pts.append(el('small', null, `${r.cleared}/15`));
+      li.append(el('span', 'rank', String(i + 1)), img, who, pts);
+      const pname = p.name || r.name;
+      if (online.player && pname) {
+        li.classList.add('clickable'); li.tabIndex = 0;
+        li.onclick = () => openPlayer(pname);
+        li.onkeydown = e => { if (e.key === 'Enter') openPlayer(pname); };
+      }
+      return li;
+    }));
+  }
+  const mine = online.myBest(boardTab);
+  note.textContent = b.state === 'slow' ? 'Still waiting for the scoreboard. It may be out of date.'
+    : boardTab === 'levels' ? `Most level stars collected (out of 45). ${mine ? 'You have ' + mine + '.' : ''}`
+    : boardTab === 'daily' ? `Everyone plays the same seed today. ${mine ? 'Your best today: ' + mine.toLocaleString() + '.' : ''}`
+      : `Best Endless runs of all time. ${mine ? 'Your best: ' + mine.toLocaleString() + '.' : ''}`;
+  if (online.auth && !online.auth.user) note.textContent += ' Sign in to post your own scores.';
+}
+
+// ---------- level select ----------
+const LOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+function openLevels() {
+  selLevel = Math.min(Math.max(1, curLevel), profile.levels.unlocked);
+  renderLevels(); setState('select');
+}
+function renderLevels() {
+  const lv = profile.levels, grid = $('levelGrid');
+  grid.replaceChildren(...LEVELS.map(L => {
+    const n = L.n, locked = n > lv.unlocked, stars = lv.stars[String(n)] || 0;
+    const b = el('button', 'lvl-tile' + (n === selLevel ? ' sel' : '') + (stars ? ' done' : ''));
+    b.disabled = locked;
+    b.setAttribute('aria-label', locked ? `Level ${n}, locked` : `Level ${n}, ${L.name}, ${stars} stars`);
+    if (locked) b.innerHTML = LOCK;
+    else {
+      b.append(String(n));
+      const st = el('small');
+      for (let i = 0; i < 3; i++) { const s = el(i < stars ? 'span' : 'i', null, '★'); st.append(s); }
+      b.append(st);
+    }
+    b.onclick = () => { if (selLevel === n) start('levels', false, n); else { selLevel = n; sfx.click(); renderLevels(); } };
+    return b;
+  }));
+  const L = LEVELS[selLevel - 1], best = lv.best[String(selLevel)] || 0;
+  $('liName').textContent = `${selLevel} · ${L.name}`;
+  $('liHint').textContent = L.hint;
+  $('liMeta').textContent = `Eat ${L.target} · ★★ ${L.target * 20} · ★★★ ${L.target * 35}${best ? ' · Best ' + best.toLocaleString() : ''}`;
+  $('btnLevelGo').firstChild.textContent = `Play level ${selLevel} `;
+  const total = Object.values(lv.stars).reduce((a, b) => a + b, 0);
+  $('starTotal').textContent = `${total} / 45 ★`;
+}
+function moveLevel(d) {
+  const delta = { left: -1, right: 1, up: -5, down: 5 }[d];
+  const n = Math.max(1, Math.min(profile.levels.unlocked, selLevel + delta));
+  if (n !== selLevel) { selLevel = n; sfx.click(); renderLevels(); }
+}
+$('btnLevelGo').onclick = () => start('levels', false, selLevel);
+$('btnLevelsBack').onclick = () => { setState('menu'); renderBests(); };
+$('btnLevels').onclick = () => openLevels();
+
+function again() {
+  if (mode === 'levels') start('levels', true, game && game.won && curLevel < 15 ? curLevel + 1 : curLevel);
+  else start(mode, true);
+}
+
+// ---------- input ----------
+const KEYS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', KeyW: 'up', KeyS: 'down', KeyA: 'left', KeyD: 'right' };
+function steer(d) {
+  if (state === 'over' && performance.now() - overAt > 650) { again(); game.enqueue(d); return; }
+  if (state === 'select') { moveLevel(d); return; }
+  if (state === 'playing' || state === 'ready') game.enqueue(d);
+  else if (state === 'menu') {
+    const order = ['endless', 'daily', 'levels', 'zen'];
+    if (d === 'left' || d === 'up') selMode = order[(order.indexOf(selMode) + 3) % 4];
+    else selMode = order[(order.indexOf(selMode) + 1) % 4];
+    sfx.click(); renderBests();
+  }
+}
+function primary() {
+  if (state === 'menu') { if (selMode === 'levels') openLevels(); else start(selMode); }
+  else if (state === 'select') start('levels', false, selLevel);
+  else if (state === 'playing') { setState('paused'); sfx.click(); }
+  else if (state === 'paused') setState('playing');
+  else if (state === 'over') again();
+}
+function turn(side) {
+  if (state === 'playing' || state === 'ready') game.turn(side);
+  else steer(side);
+}
+function back() {
+  if (state === 'playing') setState('paused');
+  else if (state === 'paused' || state === 'over' || state === 'select') {
+    if (mode === 'levels' && state !== 'select') openLevels(); else { setState('menu'); renderBests(); }
+  }
+}
+addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target.matches && e.target.matches('input:not([type="range"]), textarea')) return;
+  if (openModal) { if (e.code === 'Escape') closeModal(); return; }
+  if (e.target.closest && e.target.closest('button') && (e.code === 'Enter' || e.code === 'Space') && state !== 'playing') return;
+  if (e.target.matches && e.target.matches('input[type="range"]')) return;
+  unlockAudio();
+  const d = KEYS[e.code];
+  if (d) { e.preventDefault(); steer(d); return; }
+  if (e.code === 'Enter' || e.code === 'NumpadEnter') { e.preventDefault(); if (state === 'playing') return; primary(); }
+  else if (e.code === 'Space' || e.code === 'KeyP') { e.preventDefault(); primary(); }
+  else if (e.code === 'Escape') { e.preventDefault(); back(); }
+  else if (e.code === 'KeyM') toggleSound();
+  else if (e.code === 'KeyN') toggleMusic();
+});
+
+// swipe on the board
+let sw = null;
+const wrap = $('boardWrap');
+wrap.addEventListener('pointerdown', e => {
+  if (e.target.closest('.overlay')) return;
+  sw = { x: e.clientX, y: e.clientY };
+});
+wrap.addEventListener('pointermove', e => {
+  if (!sw) return;
+  const dx = e.clientX - sw.x, dy = e.clientY - sw.y;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < 22) return;
+  steer(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+  sw = { x: e.clientX, y: e.clientY };
+});
+addEventListener('pointerup', () => { sw = null; });
+addEventListener('pointercancel', () => { sw = null; });
+// ---------- on-screen controls ----------
+const press = b => { b.classList.add('on'); setTimeout(() => b.classList.remove('on'), 110); };
+document.querySelectorAll('.ctl-dpad button').forEach(b => b.addEventListener('pointerdown', e => {
+  e.preventDefault(); unlockAudio(); press(b); haptic(6); steer(b.dataset.dir);
+}));
+document.querySelectorAll('.ctl-turn button').forEach(b => b.addEventListener('pointerdown', e => {
+  e.preventDefault(); unlockAudio(); press(b); haptic(6); turn(b.dataset.turn);
+}));
+// Floating joystick: the touch point becomes the centre, direction follows the drag.
+const stickZone = $('stickZone'), stickBase = $('stickBase'), knob = $('stickKnob');
+let stick = null;
+function moveStick(e) {
+  const dx = e.clientX - stick.x, dy = e.clientY - stick.y, len = Math.hypot(dx, dy);
+  const R = stickBase.offsetWidth * 0.32, k = len > R ? R / len : 1;
+  knob.style.transform = `translate(${dx * k}px, ${dy * k}px)`;
+  if (len < 16) return;
+  if (len > R * 1.6) { stick.x = e.clientX - (dx / len) * R; stick.y = e.clientY - (dy / len) * R; } // origin follows a long drag
+  const d = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+  if (d !== stick.dir) { stick.dir = d; stickBase.dataset.dir = d; haptic(6); steer(d); }
+}
+stickZone.addEventListener('pointerdown', e => {
+  e.preventDefault(); unlockAudio();
+  try { stickZone.setPointerCapture(e.pointerId); } catch (_) {}
+  stick = { id: e.pointerId, x: e.clientX, y: e.clientY, dir: null };
+  stickZone.classList.add('active');
+});
+stickZone.addEventListener('pointermove', e => { if (stick && e.pointerId === stick.id) moveStick(e); });
+const endStick = e => {
+  if (!stick || e.pointerId !== stick.id) return;
+  stick = null; stickZone.classList.remove('active'); knob.style.transform = ''; stickBase.dataset.dir = '';
+};
+stickZone.addEventListener('pointerup', endStick);
+stickZone.addEventListener('pointercancel', endStick);
+
+function applyControls() {
+  document.querySelectorAll('.ctl-pick button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.ctl === profile.controls)));
+  document.querySelectorAll('.ctl').forEach(c => { c.hidden = c.dataset.for !== profile.controls; });
+}
+document.querySelectorAll('.ctl-pick button').forEach(b => b.addEventListener('click', () => {
+  profile.controls = b.dataset.ctl; applyControls(); sfx.click();
+  P.saveLocal(profile); online?.saveProfile(profile);
+}));
+applyControls();
+
+document.querySelectorAll('.mode').forEach(b => b.addEventListener('click', () => { if (b.dataset.mode === 'levels') { selMode = 'levels'; openLevels(); } else start(b.dataset.mode); }));
+$('btnResume').onclick = () => setState('playing');
+$('btnQuit').onclick = () => { if (mode === 'levels') openLevels(); else { setState('menu'); renderBests(); } };
+$('btnAgain').onclick = () => again();
+$('btnMenu').onclick = () => { setState('menu'); renderBests(); };
+
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+  for (const t of ['missions', 'leaders', 'skins', 'live']) $('tab-' + t).hidden = t !== b.dataset.tab;
+  try { localStorage.setItem('coilrush.tab', b.dataset.tab); } catch (e) {}
+});
+function pickBoard(which) {
+  boardTab = which;
+  for (const [id, w] of [['lbDaily', 'daily'], ['lbAll', 'all'], ['lbLevels', 'levels']]) $(id).setAttribute('aria-pressed', String(w === which));
+  renderBoard();
+}
+$('lbDaily').onclick = () => pickBoard('daily');
+$('lbAll').onclick = () => pickBoard('all');
+$('lbLevels').onclick = () => pickBoard('levels');
+
+function toggleSound() {
+  profile.sound = !profile.sound; setSound(profile.sound);
+  $('soundBtn').setAttribute('aria-pressed', String(!profile.sound));
+  $('soundBtn').setAttribute('aria-label', profile.sound ? 'Turn sound effects off' : 'Turn sound effects on');
+  P.saveLocal(profile);
+  if (profile.sound) { unlockAudio(); sfx.click(); }
+}
+$('soundBtn').onclick = toggleSound;
+function toggleMusic() {
+  profile.music = !profile.music;
+  unlockAudio(); setMusic(profile.music);
+  $('musicBtn').setAttribute('aria-pressed', String(!profile.music));
+  $('musicBtn').setAttribute('aria-label', profile.music ? 'Turn music off' : 'Turn music on');
+  P.saveLocal(profile); online?.saveProfile(profile);
+  toast(profile.music ? 'Music on' : 'Music off');
+}
+$('musicBtn').onclick = toggleMusic;
+
+// sound settings popover
+const panel = $('audioPanel'), audioBtn = $('audioBtn');
+function setPanel(open) { panel.hidden = !open; audioBtn.setAttribute('aria-expanded', String(open)); }
+audioBtn.onclick = e => { e.stopPropagation(); unlockAudio(); setPanel(panel.hidden); };
+document.addEventListener('pointerdown', e => { if (!panel.hidden && !e.target.closest('.audio-wrap')) setPanel(false); });
+addEventListener('keydown', e => { if (e.code === 'Escape' && !panel.hidden) { setPanel(false); e.stopImmediatePropagation(); } }, true);
+function syncVolumeUI() {
+  $('musicVol').value = profile.musicVol; $('musicVolOut').textContent = profile.musicVol;
+  $('sfxVol').value = profile.sfxVol; $('sfxVolOut').textContent = profile.sfxVol;
+}
+let volSave = null;
+function onVolume() {
+  profile.musicVol = +$('musicVol').value; profile.sfxVol = +$('sfxVol').value;
+  $('musicVolOut').textContent = profile.musicVol; $('sfxVolOut').textContent = profile.sfxVol;
+  setVolumes(profile.musicVol / 100, profile.sfxVol / 100);
+  clearTimeout(volSave); volSave = setTimeout(() => { P.saveLocal(profile); online?.saveProfile(profile); }, 600);
+}
+$('musicVol').addEventListener('input', () => { unlockAudio(); if (!profile.music && +$('musicVol').value > 0) toggleMusic(); onVolume(); });
+$('sfxVol').addEventListener('input', () => { unlockAudio(); if (!profile.sound && +$('sfxVol').value > 0) toggleSound(); onVolume(); });
+$('sfxVol').addEventListener('change', () => sfx.eat(3));
+syncVolumeUI();
+$('musicBtn').setAttribute('aria-pressed', String(!profile.music));
+$('btnPlay').addEventListener('click', () => {
+  unlockAudio();
+  if (state === 'ready') { setState('menu'); renderBests(); return; }
+  if (state === 'dying') return;
+  primary();
+});
+$('soundBtn').setAttribute('aria-pressed', String(!profile.sound));
+
+const autoPause = () => { if (state === 'playing') setState('paused'); };
+addEventListener('blur', autoPause);
+document.addEventListener('visibilitychange', () => { if (document.hidden) autoPause(); suspendAudio(document.hidden); });
+// Browsers only allow audio after a gesture: start the music on the first touch or click anywhere.
+addEventListener('pointerdown', () => unlockAudio(), { once: true });
+
+// ---------- accounts, player cards, live feed (Netlify build) ----------
+let openModal = null, acctMode = 'login';
+function showModal(id) {
+  if (state === 'playing') setState('paused');
+  openModal = id; $(id).hidden = false;
+  const first = $(id).querySelector('input, button:not(.sheet-x)'); if (first) setTimeout(() => first.focus(), 30);
+}
+function closeModal() { if (openModal) { $(openModal).hidden = true; openModal = null; } }
+for (const id of ['acctModal', 'playerModal']) {
+  $(id).addEventListener('pointerdown', e => { if (e.target === $(id)) closeModal(); });
+}
+$('acctClose').onclick = closeModal; $('pmClose').onclick = closeModal;
+
+function setAcctMode(m) {
+  acctMode = m;
+  $('amLogin').setAttribute('aria-pressed', String(m === 'login'));
+  $('amRegister').setAttribute('aria-pressed', String(m === 'register'));
+  $('acctTitle').textContent = m === 'login' ? 'Welcome back' : 'Create your account';
+  $('acctSub').textContent = m === 'login' ? 'Sign in to sync your progress across devices and post scores.' : 'Just a username and a password. Your current progress moves into the new account.';
+  $('acctSubmit').textContent = m === 'login' ? 'Sign in' : 'Create account';
+  $('acctPass').autocomplete = m === 'login' ? 'current-password' : 'new-password';
+  $('acctHelp').hidden = m === 'login';
+  $('acctErr').textContent = '';
+}
+$('amLogin').onclick = () => setAcctMode('login');
+$('amRegister').onclick = () => setAcctMode('register');
+
+function renderAcct() {
+  const a = online?.auth; if (!a) return;
+  const u = a.user;
+  $('acctBtn').hidden = false;
+  $('acctBtn').classList.toggle('guest', !u);
+  $('acctName').textContent = u ? u.name : 'Sign in';
+  $('acctBtn').setAttribute('aria-label', u ? `Account: ${u.name}` : 'Sign in or create an account');
+  $('acctAva').style.backgroundImage = u ? `url("${avatarFor(u.name)}")` : '';
+  $('acctOut').hidden = !!u; $('acctIn').hidden = !u;
+  if (u) {
+    $('acctMe').textContent = u.name;
+    const li = P.levelInfo(profile.xp), stars = Object.values(profile.levels.stars).reduce((x, y) => x + y, 0);
+    const rows = [['Rank', li.level], ['Runs', profile.games], ['Endless best', profile.best.endless], ['Level stars', `${stars} / 45`]];
+    $('acctStats').replaceChildren(...rows.map(([k, v]) => { const d = el('div'); d.append(el('dt', null, k), el('dd', null, typeof v === 'number' ? v.toLocaleString() : v)); return d; }));
+  }
+}
+$('acctBtn').onclick = () => { renderAcct(); if (!online.auth.user) setAcctMode(acctMode); showModal('acctModal'); };
+$('btnGuestSignIn').onclick = () => { setAcctMode('register'); renderAcct(); showModal('acctModal'); };
+$('acctLogout').onclick = () => { online.auth.logout(); closeModal(); toast('Signed out. Progress stays on this device.'); };
+$('acctProfile').onclick = () => { const u = online.auth.user; closeModal(); if (u) openPlayer(u.name); };
+$('acctForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const user = $('acctUser').value.trim(), pass = $('acctPass').value, err = $('acctErr'), btn = $('acctSubmit');
+  if (!/^[A-Za-z0-9_]{3,16}$/.test(user)) { err.textContent = 'Usernames are 3–16 letters, numbers or underscores.'; $('acctUser').focus(); return; }
+  if (pass.length < 6) { err.textContent = 'Passwords need at least 6 characters.'; $('acctPass').focus(); return; }
+  err.textContent = ''; btn.disabled = true; btn.textContent = acctMode === 'login' ? 'Signing in…' : 'Creating account…';
+  try {
+    authKind = acctMode;
+    const u = acctMode === 'login' ? await online.auth.login(user, pass) : await online.auth.register(user, pass);
+    $('acctPass').value = '';
+    closeModal();
+    toast(acctMode === 'login' ? `Signed in as ${u.name}` : `Welcome, ${u.name}! Your progress is now saved.`, 'mint');
+  } catch (ex) {
+    err.textContent = ex.message || 'That did not work. Try again.';
+  } finally {
+    btn.disabled = false; btn.textContent = acctMode === 'login' ? 'Sign in' : 'Create account';
+  }
+});
+
+// Swap the in-memory profile (sign-in / sign-out), keeping this device's sound and control settings.
+function applyProfile(next) {
+  for (const k of P.SETTINGS) next[k] = profile[k];
+  profile = next; missions = P.ensureDay(profile);
+  P.saveLocal(profile);
+  renderAll(); renderAcct();
+}
+let authKind = null;   // 'login' | 'register', set just before the request
+async function onAuthChange(user) {
+  const kind = authKind; authKind = null;
+  if (state === 'playing' || state === 'paused' || state === 'ready') { game = null; setState('menu'); }
+  if (user) {
+    const guest = profile;
+    P.useKey(P.keyFor(user));
+    const cached = P.loadLocal();                     // this account's copy on this device, if any
+    const remote = await online.loadProfile();        // the account's copy on the server
+    let next = remote && (remote.xp || 0) >= (cached.xp || 0) ? P.fromRemote(remote) : cached;
+    if (kind === 'register' && !remote) {
+      // A brand-new account takes over the guest's progress; the guest slot starts fresh.
+      next = guest;
+      const fresh = P.defaultProfile(); for (const k of P.SETTINGS) fresh[k] = guest[k];
+      P.saveLocal(fresh, P.GUEST_KEY);
+    }
+    applyProfile(next);
+    online.saveProfile(profile);
+    await online.loadMine();
+  } else {
+    P.useKey(P.GUEST_KEY);
+    applyProfile(P.loadLocal());
+  }
+  renderBoard();
+}
+
+const PLAYER_FIELDS = [['Rank', 'rank'], ['Runs', 'runs'], ['Endless best', 'endless'], ['Daily best today', 'daily'], ['Level stars', 'stars'], ['Levels cleared', 'cleared']];
+async function openPlayer(name) {
+  if (!online?.player) return;
+  $('pmName').textContent = name; $('pmSince').textContent = 'Loading…'; $('pmErr').textContent = '';
+  $('pmStats').replaceChildren(); $('pmAvatar').src = avatarFor(name);
+  showModal('playerModal');
+  try {
+    const p = await online.player(name);
+    $('pmName').textContent = p.name;
+    $('pmAvatar').src = avatarFor(p.name);
+    $('pmSince').textContent = 'Playing since ' + new Date(p.joined).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    $('pmStats').replaceChildren(...PLAYER_FIELDS.map(([k, f]) => {
+      const d = el('div'); d.append(el('dt', null, k), el('dd', null, f === 'stars' ? `${p.stars} / 45` : f === 'cleared' ? `${p.cleared} / 15` : Number(p[f] || 0).toLocaleString())); return d;
+    }));
+  } catch (e) {
+    $('pmSince').textContent = ''; $('pmErr').textContent = e.message || 'Could not load that player.';
+  }
+}
+$('findForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const n = $('findName').value.trim();
+  if (n) openPlayer(n);
+});
+
+const ago = t => { const s = Math.max(1, Math.round((Date.now() - t) / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : s < 86400 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`; };
+async function renderFeed(data) {
+  const o = online.online();
+  $('lvOnline').textContent = o ? o.here : '–';
+  $('lvPlaying').textContent = o ? o.playing : '–';
+  $('lvPlayers').textContent = data.stats.players.toLocaleString();
+  $('lvRunsToday').textContent = data.stats.runsToday.toLocaleString();
+  $('liveUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const list = $('feedList');
+  if (!data.events.length) { list.replaceChildren(el('li', 'empty', 'No runs yet. Yours could be the first.')); return; }
+  const ps = await online.profiles(data.events.map(e => e.id));
+  list.replaceChildren(...data.events.slice(0, 25).map(e => {
+    const li = el('li'), img = el('img'); img.alt = ''; img.src = ps[e.id]?.avatarUrl || '';
+    const what = el('span', 'what'), who = el('b', null, e.name);
+    who.onclick = () => openPlayer(e.name);
+    what.append(who, document.createTextNode(e.mode === 'levels' ? ` cleared level ${e.level} ${'★'.repeat(e.stars || 1)}` : ` scored ${Number(e.score).toLocaleString()} in ${MODES[e.mode]?.name || 'Endless'}`));
+    li.append(img, what, el('time', null, ago(e.at)));
+    return li;
+  }));
+}
+
+// ---------- coach (Claude) ----------
+$('btnCoach').onclick = async () => {
+  const sample = online?.sample; if (!sample) return;
+  const btn = $('btnCoach'), out = $('coachText');
+  btn.disabled = true; out.textContent = 'Thinking…';
+  const prompt = `You coach players of Coil Rush, a snake arcade game on a 21x21 grid. Rules: berries give 10 points times the combo multiplier; eating the next berry quickly raises the combo up to x8, being slow resets it. Golden plums are worth 50 times the multiplier and fade after a few seconds. Power-ups: Ghost (pass through your tail and rocks), Slow-mo, Magnet (pulls food toward you). Speed rises every 6 berries, and in Endless and Daily Run rocks start dropping from speed 3 with a blinking warning first. Walls kill except in Zen.
+
+Give this player ONE specific, encouraging tip for their next run, in at most two short sentences. No greeting, no lists.
+
+Their run: mode ${MODES[mode].name}, score ${game.score}, final length ${game.snake.length}, max combo x${game.stats.maxCombo}, golden plums ${game.stats.goldens}, power-ups used ${game.stats.powers}, reached speed ${game.stats.maxLevel}, survived ${Math.floor(runTime)} seconds, died because: ${CAUSES[game.cause] || 'unknown'}. Their best in this mode is ${profile.best[mode] || 0}.`;
+  try {
+    const { text } = await sample(prompt, { modelTier: 'quick', onText: ({ text }) => { out.textContent = text; } });
+    out.textContent = text.trim(); btn.hidden = true;
+  } catch (e) {
+    if (e && e.code === 'not_granted') { $('coach').hidden = true; return; }
+    out.textContent = e && e.code === 'rate_limited' ? 'The coach is busy. Try again in a minute.' : 'The coach could not answer this time.';
+    btn.disabled = false;
+  }
+};
+
+// ---------- boot ----------
+try { const t = localStorage.getItem('coilrush.tab'); if (t) document.querySelector(`.tabs [data-tab="${t}"]`)?.click(); } catch (e) {}
+renderAll(); renderReset();
+setInterval(renderReset, 30000);
+setInterval(() => {
+  if (!online) return;
+  const o = online.online();
+  if (!o) return;
+  $('online').hidden = false;
+  const label = o.label || 'here';
+  $('onlineText').textContent = o.playing > 0 ? `${o.here} ${label} · ${o.playing} playing` : `${o.here} ${label} now`;
+}, 1500);
+setInterval(() => { if (state === 'playing') renderMissions(); }, 1000);
+setState('menu');
+requestAnimationFrame(frame);
+
+initOnline().then(async api => {
+  onlineChecked = true;
+  online = api;
+  if (!api) { renderBoard(); return; }
+  // Cloud profile: keep whichever copy has more progress.
+  const remote = await api.loadProfile();
+  if (remote && typeof remote === 'object' && (remote.xp || 0) > profile.xp) {
+    profile = P.fromRemote(remote);
+    missions = P.ensureDay(profile); setSound(profile.sound); setMusic(profile.music); setVolumes(profile.musicVol / 100, profile.sfxVol / 100); syncVolumeUI(); P.saveLocal(profile); applyControls();
+    $('musicBtn').setAttribute('aria-pressed', String(!profile.music)); $('soundBtn').setAttribute('aria-pressed', String(!profile.sound));
+  } else if (api.uid && profile.games > 0) api.saveProfile(profile);
+  await api.loadMine();
+  if (api.sample) $('coach').hidden = false;
+  if (api.auth) {
+    $('tabBtn-live').hidden = false; $('lbLevels').hidden = false;
+    renderAcct();
+    api.auth.onChange(user => { onAuthChange(user).catch(e => reportError(e, 'auth')); });
+    // A saved session that has expired: fall back to the guest slot.
+    if (!api.auth.user && P.currentKey() !== P.GUEST_KEY) await onAuthChange(null);
+    api.onFeed(renderFeed);
+    try { const t = localStorage.getItem('coilrush.tab'); if (t === 'live') document.querySelector('.tabs [data-tab="live"]')?.click(); } catch (e) {}
+  }
+  if (api.hasBoard) {
+    boards.daily.state = boards.all.state = 'loading';
+    api.watchBoards((which, b) => { boards[which] = b; if (which === boardTab) renderBoard(); });
+  }
+  api.onRun(async ({ by, score, mode: m }) => {
+    const ps = by ? await api.profiles([by]) : {};
+    const name = (by && ps[by] && ps[by].name) || 'Someone';
+    toast(`${name} just scored ${score.toLocaleString()} in ${MODES[m].name}`);
+  });
+  setState(state);
+  renderAll();
+});
