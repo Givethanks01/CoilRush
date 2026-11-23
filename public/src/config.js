@@ -1,3 +1,5 @@
+export const VERSION = '0.5.0';
+
 // Static game content: skins and their unlock levels, power-up metadata.
 export const SKINS = [
   { id: 'ember',  name: 'Ember',      unlock: 1,  stops: ['#ffb36b', '#ff5d8f'] },

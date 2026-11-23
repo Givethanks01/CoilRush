@@ -54,6 +54,7 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7H5V3M5 7a8 8 0 1 1-1 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Turn</button>
             </div>
           <p class="ap-hint" id="ctlHint">Shown under the board on touch screens. Keyboard and swipe always work.</p>
+          <p class="ap-hint ap-version" id="appVersion">Coil Rush</p>
         </div>
       </div>
     </div>
@@ -165,7 +166,6 @@
               <button class="btn" id="btnLevels" hidden>All levels</button>
               <button class="btn" id="btnMenu">Menu</button>
             </div>
-            <textarea class="share-text" id="shareText" readonly hidden aria-label="Your result to share"></textarea>
             <div class="guest-cta" id="rGuest" hidden>
               <p>Sign in to save this progress and post your scores to the public leaderboard.</p>
               <button class="btn ghost" id="btnGuestSignIn">Sign in or create an account</button>
@@ -311,7 +311,11 @@
     </ul>
     <div id="plusBuyBox" class="plus-buy">
       <button class="btn primary big" id="plusBuy">Get Plus for <span id="plusPrice">$2.99</span></button>
-      <p class="muted small" id="plusGuestNote" hidden>First you'll create a free account (just a username and password), so Plus is saved to it.</p>
+      <p class="muted small" id="plusGuestNote" hidden>A FREE account takes 10 seconds (just a username and password) and saves your progress, scores and Plus on every device.</p>
+      <div class="plus-direct" id="plusDirectBox" hidden>
+        <button class="link-btn" id="plusDirect">Get Plus for <span id="plusPrice2">$2.99</span> now →</button>
+        <p class="muted small">Pay now and Plus is added to the account you create or sign in to next on this device.</p>
+      </div>
       <p class="muted small">One-time purchase, no subscription. Secure checkout by Stripe. Plus is tied to your account, so it works on every device you sign in on.</p>
     </div>
     <div id="plusOwned" class="plus-owned" hidden>
@@ -320,7 +324,37 @@
     <div id="plusWaiting" class="plus-owned" hidden>
       <p><b>Confirming your purchase…</b> This usually takes a few seconds.</p>
     </div>
+    <div id="plusClaim" class="plus-owned" hidden>
+      <p><b>Payment received!</b> Create your FREE account (or sign in) and Plus is added to it straight away.</p>
+      <button class="btn primary big" id="plusClaimBtn">Create a FREE account</button>
+    </div>
     <p class="form-err" id="plusErr" role="alert"></p>
+  </div>
+</div>
+
+<div class="modal" id="shareModal" hidden role="dialog" aria-modal="true" aria-labelledby="shareTitle">
+  <div class="sheet share-sheet">
+    <button class="sheet-x" id="shareClose" aria-label="Close">×</button>
+    <h2 id="shareTitle">Share your score</h2>
+    <div class="share-preview">
+      <img id="shareImg" alt="Your Coil Rush score card" hidden>
+      <p class="muted" id="shareMaking">Drawing your score card…</p>
+    </div>
+    <div class="share-actions">
+      <button class="btn primary" id="shareNative" hidden>Share image</button>
+      <button class="btn" id="shareSave" hidden>Save image</button>
+      <button class="btn" id="shareCopyImg" hidden>Copy image</button>
+      <button class="btn" id="shareCopy">Copy text</button>
+    </div>
+    <div class="share-social" aria-label="Post to">
+      <a id="shareX" target="_blank" rel="noopener">X</a>
+      <a id="shareWa" target="_blank" rel="noopener">WhatsApp</a>
+      <a id="shareFb" target="_blank" rel="noopener">Facebook</a>
+      <a id="shareTg" target="_blank" rel="noopener">Telegram</a>
+      <a id="shareRd" target="_blank" rel="noopener">Reddit</a>
+    </div>
+    <p class="muted small" id="shareHint">For Instagram and TikTok, tap Share image on your phone, or save the image and post it from the app.</p>
+    <textarea class="share-text" id="shareText" readonly hidden aria-label="Your result to share"></textarea>
   </div>
 </div>
 

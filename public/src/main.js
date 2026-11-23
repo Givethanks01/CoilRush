@@ -5,7 +5,8 @@ import { sfx, unlockAudio, setSound, setMusic, setMood, suspendAudio, setVolumes
 import { LEVELS, starsFor } from './levels.js';
 import * as P from './progress.js';
 import { initOnline, avatarFor } from './online.js';
-import { SKINS, POWER_INFO, MODES } from './config.js';
+import { SKINS, POWER_INFO, MODES, VERSION } from './config.js';
+import { makeShareCard } from './sharecard.js';
 import { dayKey, hashStr, msUntilReset } from './rng.js';
 
 const $ = id => document.getElementById(id);
@@ -777,8 +778,12 @@ async function onAuthChange(user) {
     applyProfile(next);
     online.saveProfile(profile);
     await online.loadMine();
+    if (online.pendingClaim && await online.redeemClaim()) {
+      buyAfterLogin = false; sfx.clear();
+      toast('Plus unlocked on your account: levels 6 to 15 and the exclusive skins are yours', 'gold');
+    }
     renderPlusUI();
-    if (buyAfterLogin) { buyAfterLogin = false; openPlus('One step left'); }
+    if (buyAfterLogin && !isPlus()) { buyAfterLogin = false; openPlus('Your account is ready'); }
   } else {
     P.useKey(P.GUEST_KEY);
     applyProfile(P.loadLocal());
@@ -838,7 +843,7 @@ function renderPlusUI() {
   const on = paywallOn();
   $('plusLine').hidden = !on || isPlus();
   $('acctPlus').hidden = !(online?.auth?.user && isPlus());
-  if (on && online.payments.price) $('plusPrice').textContent = online.payments.price;
+  if (on && online.payments.price) for (const id of ['plusPrice', 'plusPrice2']) { const e = $(id); if (e) e.textContent = online.payments.price; }
   renderSkins();
   if (state === 'select') renderLevels();
 }
@@ -846,30 +851,52 @@ function openPlus(reason = 'Get the whole game') {
   if (!paywallOn()) return;
   $('plusReason').textContent = reason;
   const owned = isPlus();
-  $('plusBuyBox').hidden = owned; $('plusOwned').hidden = !owned; $('plusWaiting').hidden = true;
+  $('plusBuyBox').hidden = owned; $('plusOwned').hidden = !owned; $('plusWaiting').hidden = true; $('plusClaim').hidden = true;
   $('plusErr').textContent = '';
-  $('plusGuestNote').hidden = !!online.auth.user;
+  const guest = !online.auth.user;
+  $('plusGuestNote').hidden = !guest; $('plusDirectBox').hidden = !guest;
+  $('plusBuy').replaceChildren(...(guest ? [document.createTextNode('Create a FREE account')]
+    : [document.createTextNode('Get Plus for '), Object.assign(el('span', null, online.payments.price || '$2.99'), { id: 'plusPrice' })]));
   showModal('plusModal');
 }
 $('plusClose').onclick = closeModal;
 $('plusModal').addEventListener('pointerdown', e => { if (e.target === $('plusModal')) closeModal(); });
 $('plusLine').onclick = () => openPlus();
-$('plusBuy').onclick = () => {
-  if (!online.auth.user) {
-    // Plus belongs to an account, so sign up (or in) first, then come straight back here.
-    buyAfterLogin = true; closeModal(); setAcctMode('register');
-    $('acctSub').textContent = 'Create a free account first, so your Plus purchase is saved to it and works on every device.';
-    renderAcct(); showModal('acctModal'); return;
-  }
+function goCheckout() {
   const url = online.buyUrl();
   if (!url) { $('plusErr').textContent = 'Checkout is not available right now. Try again later.'; return; }
   P.saveLocal(profile);
   location.href = url;
+}
+function openRegister(sub, thenBuy) {
+  buyAfterLogin = thenBuy; closeModal(); setAcctMode('register');
+  if (sub) $('acctSub').textContent = sub;
+  renderAcct(); showModal('acctModal');
+}
+$('plusBuy').onclick = () => {
+  if (!online.auth.user) { openRegister('A FREE account saves your progress and scores, and lets you add Plus any time.', true); return; }
+  goCheckout();
 };
+$('plusDirect').onclick = goCheckout;   // guest pays first; the purchase is claimed by their next sign-in
+$('plusClaimBtn').onclick = () => openRegister('Create your FREE account and the Plus you just bought is added to it.', false);
 // Back from Stripe: the webhook can take a few seconds, so poll until the account shows Plus.
 async function confirmPurchase() {
   history.replaceState(null, '', location.pathname + location.search);
-  if (!online?.auth?.user) { toast('Sign in to the account you bought Plus with.'); return; }
+  if (!online?.auth?.user) {
+    // Guest checkout: wait for Stripe's confirmation, then ask them to make (or sign in to) an account.
+    if (!online?.pendingClaim) { toast('Sign in to the account you bought Plus with.'); return; }
+    openPlus('Thanks for your purchase');
+    $('plusBuyBox').hidden = true; $('plusWaiting').hidden = false;
+    for (let i = 0; i < 20; i++) {
+      if (await online.claimPaid()) { $('plusWaiting').hidden = true; $('plusClaim').hidden = false; $('plusReason').textContent = 'One last step'; sfx.clear(); return; }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    $('plusWaiting').hidden = true;
+    $('plusErr').textContent = 'Your payment is still being confirmed. Create your FREE account and Plus will be added as soon as it arrives.';
+    $('plusClaim').hidden = false;
+    return;
+  }
+  if (online.pendingClaim && await online.redeemClaim()) { renderPlusUI(); renderAcct(); }
   openPlus('Thanks for your purchase');
   $('plusBuyBox').hidden = true; $('plusWaiting').hidden = false;
   for (let i = 0; i < 20; i++) {
@@ -887,8 +914,9 @@ async function confirmPurchase() {
 
 // ---------- share ----------
 function shareUrl() {
-  if (online && online.kind === 'netlify') return location.origin + '/#daily';
-  if (window.claude) return 'https://claude.ai/artifact/UoUdpSsFiEfQnEK31YAeuF#daily';
+  const tag = mode === 'levels' ? '#levels' : mode === 'daily' ? '#daily' : '';
+  if (online && online.kind === 'netlify') return location.origin + '/' + tag;
+  if (window.claude) return 'https://claude.ai/artifact/UoUdpSsFiEfQnEK31YAeuF' + tag;
   return location.protocol.startsWith('http') ? location.origin + location.pathname : '';
 }
 function shareMessage() {
@@ -907,15 +935,71 @@ function shareMessage() {
   lines.push(url ? `Beat me: ${url}` : 'Beat my score!');
   return lines.filter(Boolean).join('\n');
 }
-$('btnShare').onclick = async () => {
-  const text = shareMessage();
-  if (navigator.share) {
-    try { await navigator.share({ text }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+let shareFile = null, shareObjUrl = null;
+function cardData() {
+  const st = runStats(true), u = online?.auth?.user;
+  const L = mode === 'levels' ? LEVELS[curLevel - 1] : null;
+  const base = {
+    score: game.score, skin: skin(), url: shareUrl(),
+    player: u ? u.name : null, badge: u && isPlus() ? 'PLUS' : null,
+    playerSub: `Rank ${P.levelInfo(profile.xp).level}` + (profile.streak > 1 ? ` · ${profile.streak}-day streak` : ''),
+  };
+  if (L) return { ...base, modeLabel: `Level ${curLevel} · ${L.name}`, accent: '#7af0cf', stars: game.won ? (levelResult ? levelResult.stars : 1) : 0,
+    scoreLabel: game.won ? 'points · level cleared' : `points · ${game.eaten} of ${L.target} berries`,
+    stats: [['Berries', `${game.eaten}/${L.target}`], ['Combo', '×' + st.maxCombo], ['Time', fmtTime(st.seconds)]],
+    cta: game.won ? 'Can you clear it?' : 'Can you do better?' };
+  return { ...base, modeLabel: mode === 'daily' ? `Daily Run · ${dayKey()}` : 'Endless', accent: mode === 'daily' ? '#ffc94a' : '#ff7a59',
+    stats: [['Combo', '×' + st.maxCombo], ['Length', st.length], ['Time', fmtTime(st.seconds)], ['Golden', st.goldens]] };
+}
+async function openShare() {
+  const text = shareMessage(), url = shareUrl();
+  const enc = encodeURIComponent;
+  $('shareX').href = 'https://x.com/intent/post?text=' + enc(text);
+  $('shareWa').href = 'https://wa.me/?text=' + enc(text);
+  $('shareTg').href = 'https://t.me/share/url?url=' + enc(url) + '&text=' + enc(text.replace(/\n?Beat me:.*$/, ''));
+  $('shareRd').href = 'https://www.reddit.com/submit?url=' + enc(url) + '&title=' + enc(text.split('\n').slice(0, 2).join(' · '));
+  $('shareFb').href = 'https://www.facebook.com/sharer/sharer.php?u=' + enc(url);
+  for (const id of ['shareFb', 'shareTg', 'shareRd']) $(id).hidden = !url;
+  $('shareText').hidden = true; $('shareImg').hidden = true; $('shareMaking').hidden = false;
+  for (const id of ['shareNative', 'shareSave', 'shareCopyImg']) $(id).hidden = true;
+  showModal('shareModal');
+  try {
+    const { blob } = await makeShareCard(cardData());
+    if (shareObjUrl) URL.revokeObjectURL(shareObjUrl);
+    shareObjUrl = URL.createObjectURL(blob);
+    shareFile = new File([blob], `coil-rush-${mode}-${game.score}.png`, { type: 'image/png' });
+    $('shareImg').src = shareObjUrl; $('shareImg').hidden = false; $('shareMaking').hidden = true;
+    const canFiles = !!(navigator.canShare && navigator.canShare({ files: [shareFile] }));
+    $('shareNative').hidden = !canFiles;
+    $('shareSave').hidden = !!window.claude;              // downloads are blocked inside claude.ai
+    $('shareCopyImg').hidden = !(window.ClipboardItem && navigator.clipboard && navigator.clipboard.write);
+    $('shareHint').textContent = window.claude
+      ? 'Right-click or long-press the image to save it, then post it anywhere.'
+      : canFiles ? 'Share image opens Instagram, TikTok, WhatsApp and more.' : 'Save the image, then post it on Instagram, TikTok or anywhere else.';
+  } catch (e) {
+    reportError(e, 'sharecard');
+    $('shareMaking').textContent = 'Could not draw the picture, but you can still copy the text.';
   }
-  try { await navigator.clipboard.writeText(text); toast('Copied! Paste it anywhere to challenge your friends.', 'mint'); return; }
-  catch (e) {}
+}
+$('btnShare').onclick = () => openShare();
+$('shareClose').onclick = closeModal;
+$('shareModal').addEventListener('pointerdown', e => { if (e.target === $('shareModal')) closeModal(); });
+$('shareNative').onclick = async () => {
+  try { await navigator.share({ files: [shareFile], text: shareMessage(), title: 'Coil Rush' }); }
+  catch (e) { if (!e || e.name !== 'AbortError') toast('Sharing did not work here. Save the image instead.'); }
+};
+$('shareSave').onclick = () => {
+  const a = document.createElement('a'); a.href = shareObjUrl; a.download = shareFile.name;
+  document.body.append(a); a.click(); a.remove(); toast('Image saved', 'mint');
+};
+$('shareCopyImg').onclick = async () => {
+  try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': shareFile })]); toast('Image copied. Paste it into any post.', 'mint'); }
+  catch (e) { toast('Copying images is not supported here. Save it instead.'); }
+};
+$('shareCopy').onclick = async () => {
+  const text = shareMessage();
+  try { await navigator.clipboard.writeText(text); toast('Copied! Paste it anywhere to challenge your friends.', 'mint'); return; } catch (e) {}
   const box = $('shareText'); box.value = text; box.hidden = false; box.focus(); box.select();
-  toast('Copy the text below to share it');
 };
 
 // ---------- coach (Claude) ----------
@@ -951,6 +1035,8 @@ setInterval(() => {
   $('onlineText').textContent = o.playing > 0 ? `${o.here} ${label} · ${o.playing} playing` : `${o.here} ${label} now`;
 }, 1500);
 setInterval(() => { if (state === 'playing') renderMissions(); }, 1000);
+$('appVersion').textContent = `Coil Rush v${VERSION}`;
+
 // Deep links from shared results: #daily or #levels open that mode's card.
 if (location.hash === '#daily' || location.hash === '#levels') { selMode = location.hash.slice(1); renderBests(); }
 setState('menu');
@@ -971,6 +1057,7 @@ initOnline().then(async api => {
   if (api.sample) $('coach').hidden = false;
   if (api.payments) renderPlusUI();
   if (location.hash === '#plus-thanks') confirmPurchase();
+  else if (api.pendingClaim && !(api.auth && api.auth.user)) api.claimPaid().then(paid => { if (paid) toast('You have Plus waiting. Create your FREE account to claim it.', 'gold'); });
   if (api.auth) {
     $('tabBtn-live').hidden = false; $('lbLevels').hidden = false;
     renderAcct();

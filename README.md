@@ -75,14 +75,22 @@ Plus is a **one-time purchase** that unlocks levels 6–15, three exclusive skin
 
 ### How it works
 
-- Players must be signed in to buy, so Plus belongs to their account and works on every device. Guests are asked to create a free account first.
+- The Plus window shows guests a **Create a FREE account** button, with a **Get Plus for $2.99 now →** link at the bottom that goes straight to Stripe.
+- Signed-in buyers: Plus is added to their account right away.
+- Guests who pay first get a private claim code, kept in their browser. After payment they're asked to create a FREE account (or sign in), and the purchase attaches to that account automatically. One purchase can only ever attach to one account.
 - The game sends players to your Payment Link with `client_reference_id=<their account id>`. When Stripe confirms the payment, it calls `/api/stripe-webhook`. The function checks Stripe's signature and marks that account as Plus.
 - A refund in Stripe (`charge.refunded`) removes Plus automatically.
 - To grant or remove Plus by hand, open Netlify → your site → **Blobs** → store `plus`. Each account id has a record with `"active": true` or `false`.
+- **Pro (free Plus) accounts:** `Slimzy169` and `GiveThanks` always have Plus. To give it to more players without touching code, set the environment variable `PRO_USERS` to a comma-separated list of usernames (for example `alice,bob99`) and redeploy.
 
 ## Sharing
 
-After every run (except Zen) there's a **Share** button. On phones it opens the share sheet; elsewhere it copies a message like:
+After every run (except Zen) there's a **Share** button. It draws a **1080×1350 score card image**, a size that suits Instagram, TikTok, X, WhatsApp and Facebook. The card shows the mode, score, stats or stars, the player's snake in their skin, their name, rank and Plus badge, and a "Can you beat me?" link.
+
+- **Share image** (phones): opens the system share sheet with the picture, for Instagram, TikTok, WhatsApp and others
+- **Save image** / **Copy image**: for posting from a computer
+- One-tap links for **X, WhatsApp, Facebook, Telegram and Reddit**
+- **Copy text**: a text version like this:
 
 ```
 🐍 Coil Rush · Daily Run 2026-11-23
@@ -143,6 +151,8 @@ coil-rush/
 | `GET /api/player?name=` | – | Public profile |
 | `POST /api/presence` `{cid, status}` | – | Heartbeat; returns `{online, playing}` |
 | `GET /api/config` | – | Whether Plus is on, plus the payment link and price |
+| `GET /api/claim?c=` | – | Whether a guest purchase has been paid |
+| `POST /api/claim` `{claim}` | ✓ | Attaches a paid guest purchase to the signed-in account |
 | `POST /api/stripe-webhook` | Stripe signature | Grants Plus on a paid checkout and removes it on a refund |
 | `POST /api/log` | – | Records crash reports from players' browsers in the function logs |
 
@@ -180,6 +190,11 @@ coil-rush/
 
 ## Changelog
 
+- **v0.5**:
+  - Score card image sharing
+  - Guest checkout with automatic claim on sign-up, and a "Create a FREE account" first step in the Plus window
+  - Pro accounts (Slimzy169, GiveThanks, plus `PRO_USERS`)
+  - Version label in Options
 - **v0.4**: Coil Rush Plus (Stripe Payment Links + verified webhook, refunds handled, Plus badge, 3 exclusive skins, levels 6–15), Share button with `#daily` and `#levels` deep links.
 - **v0.3** (reliability):
   - Atomic, retried writes for leaderboards, feed, stats and score records, so nothing is lost when players finish at the same time

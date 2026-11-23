@@ -39,6 +39,16 @@ async function mutate(name, key, fn, init = null) {
   }
   throw Object.assign(new Error('The server is busy right now. Try again in a moment.'), { status: 503 });
 }
+// Complimentary Plus ("pro") accounts, by username. Add more without code via the PRO_USERS
+// environment variable (comma-separated usernames).
+const COMPED = new Set(['slimzy169', 'givethanks', ...(process.env.PRO_USERS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean)]);
+const isComped = name => COMPED.has(String(name || '').toLowerCase());
+async function hasPlus(id, name) {
+  if (isComped(name)) return true;
+  const rec = await store('plus').get(id, { type: 'json' });
+  return !!(rec && rec.active);
+}
+const CLAIM_RE = /^g-[A-Za-z0-9]{20,40}$/;
 const int = (v, max) => (Number.isFinite(v) && v >= 0 ? Math.min(Math.floor(v), max) : 0);
 
 // ---------- sessions ----------
@@ -133,9 +143,9 @@ async function me(req) {
   const [profile, scores, plus] = await Promise.all([
     store('profiles').get(s.id, { type: 'json' }),
     store('scores').get(s.id, { type: 'json' }),
-    store('plus').get(s.id, { type: 'json' }),
+    hasPlus(s.id, s.name),
   ]);
-  return json({ user: s, profile: profile || null, scores: scores || null, plus: !!(plus && plus.active) });
+  return json({ user: s, profile: profile || null, scores: scores || null, plus, pro: isComped(s.name) });
 }
 
 async function saveProfile(req) {
@@ -182,8 +192,7 @@ async function submitScore(req) {
   // Plausibility: even a perfect Fever run can't earn more than this per second.
   if (mode !== 'levels' && score > 80 + seconds * 400) return fail(422, 'That score could not be verified.');
 
-  const plusRec = await store('plus').get(s.id, { type: 'json' });
-  const plus = !!(plusRec && plusRec.active);
+  const plus = await hasPlus(s.id, s.name);
   let tooFast = false;
   const doc = await mutate('scores', s.id, d => {
     if (now - (d.lastAt || 0) < 2500) { tooFast = true; return undefined; }
@@ -237,7 +246,7 @@ async function player(url) {
   return json({
     name: user.name, joined: user.createdAt, rank: d.rank || 1, skin: d.skin || 'ember', runs: d.runs || 0,
     endless: d.endless || 0, daily: d.dailyDay === today() ? d.daily || 0 : 0, stars: d.stars || 0, cleared: d.cleared || 0,
-    plus: !!d.plus,
+    plus: !!d.plus || isComped(user.name),
   });
 }
 
@@ -298,16 +307,48 @@ async function stripeWebhook(req) {
   const plusStore = store('plus');
   if ((event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') && obj.payment_status === 'paid') {
     const uid = obj.client_reference_id;
-    if (typeof uid === 'string' && /^[0-9a-f-]{36}$/i.test(uid)) {
+    if (typeof uid === 'string' && CLAIM_RE.test(uid)) {
+      // A guest paid before making an account: park the purchase until they sign in and claim it.
+      await mutate('plus', 'claim/' + uid, cur => (cur.paid ? undefined : { ...cur, paid: true, session: obj.id, paidAt: new Date().toISOString() }), {});
+      if (obj.payment_intent) await plusStore.setJSON('pi/' + obj.payment_intent, { claim: uid });
+      console.log('[plus] guest purchase waiting to be claimed', uid);
+    } else if (typeof uid === 'string' && /^[0-9a-f-]{36}$/i.test(uid)) {
       await setPlus(uid, true, { since: new Date().toISOString(), session: obj.id, paymentIntent: obj.payment_intent || null });
       if (obj.payment_intent) await plusStore.setJSON('pi/' + obj.payment_intent, { uid });
       console.log('[plus] granted', uid);
     } else console.warn('[plus] paid checkout without a valid client_reference_id', obj.id);
   } else if (event.type === 'charge.refunded' && obj.payment_intent) {
     const link = await plusStore.get('pi/' + obj.payment_intent, { type: 'json' });
-    if (link && link.uid) { await setPlus(link.uid, false, { refundedAt: new Date().toISOString() }); console.log('[plus] revoked after refund', link.uid); }
+    let uid = link && link.uid;
+    if (link && link.claim) {
+      const c = await mutate('plus', 'claim/' + link.claim, cur => ({ ...cur, refunded: true }), {});
+      uid = c.uid;
+    }
+    if (uid) { await setPlus(uid, false, { refundedAt: new Date().toISOString() }); console.log('[plus] revoked after refund', uid); }
   }
   return json({ received: true });
+}
+
+async function claimStatus(url) {
+  const c = url.searchParams.get('c') || '';
+  if (!CLAIM_RE.test(c)) return fail(400, 'Bad claim code.');
+  const rec = await store('plus').get('claim/' + c, { type: 'json' });
+  return json({ paid: !!(rec && rec.paid && !rec.refunded), claimed: !!(rec && rec.uid) });
+}
+async function claim(req) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in to claim Plus.');
+  const { claim: c = '' } = await body(req, 500);
+  if (!CLAIM_RE.test(c)) return fail(400, 'Bad claim code.');
+  let result = 'none';
+  await mutate('plus', 'claim/' + c, cur => {
+    if (!cur.paid || cur.refunded) { result = 'unpaid'; return undefined; }
+    if (cur.uid) { result = cur.uid === s.id ? 'ok' : 'taken'; return undefined; }
+    result = 'ok'; return { ...cur, uid: s.id, claimedAt: new Date().toISOString() };
+  }, {});
+  if (result === 'ok') { await setPlus(s.id, true, { since: new Date().toISOString(), viaClaim: c }); return json({ ok: true, plus: true }); }
+  if (result === 'taken') return fail(409, 'This purchase is already linked to another account.');
+  return json({ ok: false, plus: await hasPlus(s.id, s.name) });
 }
 
 // Crash reports from players' browsers. They show up in Netlify → Logs → Functions → api.
@@ -340,6 +381,8 @@ export default async (req) => {
       case 'POST presence': return await presence(req);
       case 'POST log': return await clientLog(req);
       case 'GET config': return await publicConfig();
+      case 'GET claim': return await claimStatus(url);
+      case 'POST claim': return await claim(req);
       case 'POST stripe-webhook': return await stripeWebhook(req);
       default: return fail(404, 'Not found.');
     }

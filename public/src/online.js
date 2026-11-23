@@ -166,15 +166,37 @@ async function initNetlify() {
     // Coil Rush Plus
     get payments() { return payments; },
     get isPlus() { return plus; },
+    // Signed in: the purchase goes straight to the account. Guest: it gets a private claim
+    // code (kept in this browser) and is attached to whichever account they sign in to next.
     buyUrl() {
-      if (!payments.enabled || !auth) return null;
-      return payments.link + (payments.link.includes('?') ? '&' : '?') + 'client_reference_id=' + encodeURIComponent(auth.user.id);
+      if (!payments.enabled) return null;
+      let ref = auth ? auth.user.id : LS.get('coilrush.claim');
+      if (!ref) {
+        const rnd = (crypto.getRandomValues ? Array.from(crypto.getRandomValues(new Uint8Array(24)), b => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[b % 62]).join('') : Math.random().toString(36).slice(2) + Date.now().toString(36));
+        ref = 'g-' + rnd.slice(0, 24); LS.set('coilrush.claim', ref);
+      }
+      return payments.link + (payments.link.includes('?') ? '&' : '?') + 'client_reference_id=' + encodeURIComponent(ref);
+    },
+    get pendingClaim() { return LS.get('coilrush.claim'); },
+    async claimPaid() {
+      const c = LS.get('coilrush.claim'); if (!c) return false;
+      try { return (await call('claim?c=' + encodeURIComponent(c))).paid; } catch (e) { return false; }
+    },
+    // Attach a guest purchase to the signed-in account. Returns true once the account has Plus.
+    async redeemClaim() {
+      const c = LS.get('coilrush.claim'); if (!c || !auth) return false;
+      try {
+        const r = await call('claim', { method: 'POST', body: { claim: c } });
+        if (r.ok) { plus = true; LS.set('coilrush.claim', null); return true; }
+      } catch (e) { if (e.status === 409) LS.set('coilrush.claim', null); }
+      return false;
     },
     async refreshMe() {
       if (!auth) return false;
       try { const r = await call('me'); mine = r.scores; plus = !!r.plus; } catch (e) {}
       return plus;
     },
+    get user() { return auth ? auth.user : null; },
 
     async loadProfile() {
       if (!auth) return null;
