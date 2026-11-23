@@ -33,7 +33,15 @@ let acc = 0, runTime = 0, readyT = 0, readyDur = 1050, dyingT = 0, overAt = 0, l
 let runMissions = [];        // missions completed during this run
 let xpBefore = 0, runStreakXp = 0;
 
-const skin = () => SKINS.find(s => s.id === profile.skin) || SKINS[0];
+// Coil Rush Plus is only active when the server has payments configured (Netlify + Stripe).
+const FREE_LEVELS = 5;
+const paywallOn = () => !!(online && online.payments && online.payments.enabled);
+const isPlus = () => !!(online && online.isPlus);
+const plusLocked = n => paywallOn() && !isPlus() && n > FREE_LEVELS;
+const skin = () => {
+  const s = SKINS.find(k => k.id === profile.skin);
+  return s && !(s.plus && !isPlus()) ? s : SKINS[0];
+};
 const ranked = m => m === 'endless' || m === 'daily';       // leaderboard
 const missionMode = m => m !== 'zen';                       // missions count
 const fmtTime = s => (s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.floor(s % 60)).padStart(2, '0')}s` : `${Math.floor(s)}s`);
@@ -62,6 +70,7 @@ function setState(s) {
 
 function start(m, quick = false, level = curLevel) {
   unlockAudio();
+  if (m === 'levels' && plusLocked(level)) { openPlus(`Level ${level} is part of Plus`); return; }
   mode = m; selMode = m;
   const seed = m === 'daily' ? hashStr('daily:' + dayKey()) : (Math.random() * 2 ** 32) >>> 0;
   if (m === 'levels') { curLevel = selLevel = level; game = new Game(m, seed, LEVELS[level - 1]); }
@@ -154,7 +163,8 @@ function fillResults(s, newBest, xpGain) {
   if (lvl) [...starsEl.children].forEach((sp, i) => { sp.classList.toggle('on', i < levelResult.stars); });
   if (lvl && levelResult.stars) for (let i = 0; i < levelResult.stars; i++) setTimeout(() => sfx.star(i), 250 + i * 180);
   $('btnLevels').hidden = !lvl;
-  $('btnAgain').firstChild.textContent = lvl ? (game.won && curLevel < 15 ? 'Next level ' : 'Retry ') : 'Play again ';
+  $('btnAgain').firstChild.textContent = lvl ? (game.won && curLevel < 15 ? (plusLocked(curLevel + 1) ? `Unlock level ${curLevel + 1} ` : 'Next level ') : 'Retry ') : 'Play again ';
+  $('shareText').hidden = true; $('btnShare').hidden = mode === 'zen';
   $('rBest').hidden = !newBest;
   $('rLen').textContent = s.length; $('rCombo').textContent = '×' + s.maxCombo;
   $('rTime').textContent = fmtTime(s.seconds); $('rGold').textContent = s.goldens;
@@ -363,17 +373,25 @@ function renderReset() {
 }
 function renderSkins() {
   const lvl = P.levelInfo(profile.xp).level, grid = $('skinGrid'); grid.replaceChildren();
+  const equipped = skin().id;
   for (const k of SKINS) {
-    const b = el('button', 'skin' + (k.id === profile.skin ? ' on' : ''));
+    if (k.plus && !paywallOn()) continue;                  // Plus skins only exist where Plus can be bought
+    const lockedPlus = k.plus && !isPlus();
+    const b = el('button', 'skin' + (k.id === equipped ? ' on' : '') + (k.plus ? ' plus-skin' : ''));
     const sw = el('span', 'sw');
     sw.style.background = `linear-gradient(90deg, ${k.stops.join(', ')})`;
-    b.append(sw, el('span', null, k.name), el('small', null, lvl >= k.unlock ? (k.id === profile.skin ? 'Equipped' : 'Tap to equip') : `Unlocks at Rank ${k.unlock}`));
-    b.disabled = lvl < k.unlock;
-    b.setAttribute('aria-pressed', String(k.id === profile.skin));
-    b.onclick = () => { profile.skin = k.id; P.saveLocal(profile); online?.saveProfile(profile); sfx.click(); renderSkins(); };
+    const note = lockedPlus ? 'Plus exclusive' : lvl >= k.unlock ? (k.id === equipped ? 'Equipped' : 'Tap to equip') : `Unlocks at Rank ${k.unlock}`;
+    b.append(sw, el('span', null, k.name), el('small', null, note));
+    b.dataset.locked = String(lockedPlus);
+    b.disabled = !k.plus && lvl < k.unlock;
+    b.setAttribute('aria-pressed', String(k.id === equipped));
+    b.onclick = () => {
+      if (lockedPlus) { openPlus(`${k.name} is a Plus skin`); return; }
+      profile.skin = k.id; P.saveLocal(profile); online?.saveProfile(profile); sfx.click(); renderSkins();
+    };
     grid.append(b);
   }
-  const next = SKINS.find(k => k.unlock > lvl);
+  const next = SKINS.find(k => !k.plus && k.unlock > lvl);
   $('skinNext').textContent = next ? `Next: ${next.name} at Rank ${next.unlock}` : 'All skins unlocked';
 }
 function renderBests() {
@@ -413,6 +431,7 @@ async function renderBoard() {
       const li = el('li', me ? 'me' : '');
       const img = el('img'); img.alt = ''; if (p.avatarUrl) img.src = p.avatarUrl;
       const who = el('span', 'who', p.name || (me ? 'You' : 'Player'));
+      if (r.plus) who.append(el('span', 'plus-tag', 'PLUS'));
       if (me) who.append(el('small', null, 'you'));
       const pts = el('span', 'pts', boardTab === 'levels' ? `★ ${r.score}` : r.score.toLocaleString());
       if (boardTab === 'levels') pts.append(el('small', null, `${r.cleared}/15`));
@@ -437,16 +456,17 @@ async function renderBoard() {
 // ---------- level select ----------
 const LOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
 function openLevels() {
-  selLevel = Math.min(Math.max(1, curLevel), profile.levels.unlocked);
+  selLevel = Math.min(Math.max(1, curLevel), profile.levels.unlocked, plusLocked(FREE_LEVELS + 1) ? FREE_LEVELS : 15);
   renderLevels(); setState('select');
 }
 function renderLevels() {
   const lv = profile.levels, grid = $('levelGrid');
   grid.replaceChildren(...LEVELS.map(L => {
-    const n = L.n, locked = n > lv.unlocked, stars = lv.stars[String(n)] || 0;
-    const b = el('button', 'lvl-tile' + (n === selLevel ? ' sel' : '') + (stars ? ' done' : ''));
+    const n = L.n, pl = plusLocked(n), locked = !pl && n > lv.unlocked, stars = lv.stars[String(n)] || 0;
+    const b = el('button', 'lvl-tile' + (n === selLevel ? ' sel' : '') + (stars ? ' done' : '') + (pl ? ' plus-lock' : ''));
     b.disabled = locked;
-    b.setAttribute('aria-label', locked ? `Level ${n}, locked` : `Level ${n}, ${L.name}, ${stars} stars`);
+    b.setAttribute('aria-label', pl ? `Level ${n}, part of Coil Rush Plus` : locked ? `Level ${n}, locked` : `Level ${n}, ${L.name}, ${stars} stars`);
+    if (pl) { b.append(String(n)); b.append(el('span', 'plus-tag', 'PLUS')); b.onclick = () => openPlus(`Level ${n} is part of Plus`); return b; }
     if (locked) b.innerHTML = LOCK;
     else {
       b.append(String(n));
@@ -467,7 +487,8 @@ function renderLevels() {
 }
 function moveLevel(d) {
   const delta = { left: -1, right: 1, up: -5, down: 5 }[d];
-  const n = Math.max(1, Math.min(profile.levels.unlocked, selLevel + delta));
+  const max = Math.min(profile.levels.unlocked, plusLocked(FREE_LEVELS + 1) ? FREE_LEVELS : 15);
+  const n = Math.max(1, Math.min(max, selLevel + delta));
   if (n !== selLevel) { selLevel = n; sfx.click(); renderLevels(); }
 }
 $('btnLevelGo').onclick = () => start('levels', false, selLevel);
@@ -475,7 +496,11 @@ $('btnLevelsBack').onclick = () => { setState('menu'); renderBests(); };
 $('btnLevels').onclick = () => openLevels();
 
 function again() {
-  if (mode === 'levels') start('levels', true, game && game.won && curLevel < 15 ? curLevel + 1 : curLevel);
+  if (mode === 'levels') {
+    const next = game && game.won && curLevel < 15 ? curLevel + 1 : curLevel;
+    if (plusLocked(next)) { openPlus(`Level ${next} is part of Plus`); return; }
+    start('levels', true, next);
+  }
   else start(mode, true);
 }
 
@@ -692,6 +717,7 @@ function renderAcct() {
   $('acctBtn').hidden = false;
   $('acctBtn').classList.toggle('guest', !u);
   $('acctName').textContent = u ? u.name : 'Sign in';
+  $('acctPlus').hidden = !(u && isPlus());
   $('acctBtn').setAttribute('aria-label', u ? `Account: ${u.name}` : 'Sign in or create an account');
   $('acctAva').style.backgroundImage = u ? `url("${avatarFor(u.name)}")` : '';
   $('acctOut').hidden = !!u; $('acctIn').hidden = !u;
@@ -751,9 +777,12 @@ async function onAuthChange(user) {
     applyProfile(next);
     online.saveProfile(profile);
     await online.loadMine();
+    renderPlusUI();
+    if (buyAfterLogin) { buyAfterLogin = false; openPlus('One step left'); }
   } else {
     P.useKey(P.GUEST_KEY);
     applyProfile(P.loadLocal());
+    renderPlusUI();
   }
   renderBoard();
 }
@@ -768,7 +797,7 @@ async function openPlayer(name) {
     const p = await online.player(name);
     $('pmName').textContent = p.name;
     $('pmAvatar').src = avatarFor(p.name);
-    $('pmSince').textContent = 'Playing since ' + new Date(p.joined).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    $('pmSince').textContent = (p.plus ? 'Plus member · ' : '') + 'Playing since ' + new Date(p.joined).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     $('pmStats').replaceChildren(...PLAYER_FIELDS.map(([k, f]) => {
       const d = el('div'); d.append(el('dt', null, k), el('dd', null, f === 'stars' ? `${p.stars} / 45` : f === 'cleared' ? `${p.cleared} / 15` : Number(p[f] || 0).toLocaleString())); return d;
     }));
@@ -803,6 +832,92 @@ async function renderFeed(data) {
   }));
 }
 
+// ---------- Coil Rush Plus ----------
+let buyAfterLogin = false;
+function renderPlusUI() {
+  const on = paywallOn();
+  $('plusLine').hidden = !on || isPlus();
+  $('acctPlus').hidden = !(online?.auth?.user && isPlus());
+  if (on && online.payments.price) $('plusPrice').textContent = online.payments.price;
+  renderSkins();
+  if (state === 'select') renderLevels();
+}
+function openPlus(reason = 'Get the whole game') {
+  if (!paywallOn()) return;
+  $('plusReason').textContent = reason;
+  const owned = isPlus();
+  $('plusBuyBox').hidden = owned; $('plusOwned').hidden = !owned; $('plusWaiting').hidden = true;
+  $('plusErr').textContent = '';
+  $('plusGuestNote').hidden = !!online.auth.user;
+  showModal('plusModal');
+}
+$('plusClose').onclick = closeModal;
+$('plusModal').addEventListener('pointerdown', e => { if (e.target === $('plusModal')) closeModal(); });
+$('plusLine').onclick = () => openPlus();
+$('plusBuy').onclick = () => {
+  if (!online.auth.user) {
+    // Plus belongs to an account, so sign up (or in) first, then come straight back here.
+    buyAfterLogin = true; closeModal(); setAcctMode('register');
+    $('acctSub').textContent = 'Create a free account first, so your Plus purchase is saved to it and works on every device.';
+    renderAcct(); showModal('acctModal'); return;
+  }
+  const url = online.buyUrl();
+  if (!url) { $('plusErr').textContent = 'Checkout is not available right now. Try again later.'; return; }
+  P.saveLocal(profile);
+  location.href = url;
+};
+// Back from Stripe: the webhook can take a few seconds, so poll until the account shows Plus.
+async function confirmPurchase() {
+  history.replaceState(null, '', location.pathname + location.search);
+  if (!online?.auth?.user) { toast('Sign in to the account you bought Plus with.'); return; }
+  openPlus('Thanks for your purchase');
+  $('plusBuyBox').hidden = true; $('plusWaiting').hidden = false;
+  for (let i = 0; i < 20; i++) {
+    if (await online.refreshMe()) {
+      $('plusWaiting').hidden = true; $('plusOwned').hidden = false; $('plusReason').textContent = 'Welcome to Plus';
+      sfx.clear(); renderPlusUI(); renderAcct(); renderBoard();
+      toast('Plus unlocked: levels 6 to 15 and the exclusive skins are yours', 'gold');
+      return;
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  $('plusWaiting').hidden = true;
+  $('plusErr').textContent = 'Your payment went through, but Plus has not appeared yet. Reload the page in a minute. If it still is not there, contact us with your username.';
+}
+
+// ---------- share ----------
+function shareUrl() {
+  if (online && online.kind === 'netlify') return location.origin + '/#daily';
+  if (window.claude) return 'https://claude.ai/artifact/UoUdpSsFiEfQnEK31YAeuF#daily';
+  return location.protocol.startsWith('http') ? location.origin + location.pathname : '';
+}
+function shareMessage() {
+  const s = runStats(true), time = fmtTime(s.seconds), url = shareUrl();
+  let lines;
+  if (mode === 'levels') {
+    const L = LEVELS[curLevel - 1], st = levelResult ? levelResult.stars : 0;
+    lines = game.won
+      ? [`🐍 Coil Rush · Level ${curLevel}: ${L.name}`, `Cleared ${'★'.repeat(st)}${'☆'.repeat(3 - st)} · ${game.score.toLocaleString()} pts · ${time}`]
+      : [`🐍 Coil Rush · Level ${curLevel}: ${L.name}`, `${game.eaten}/${L.target} berries before I crashed. Can you clear it?`];
+  } else {
+    const title = mode === 'daily' ? `Daily Run ${dayKey()}` : 'Endless';
+    const extras = [`🍓 ${s.berries}`, s.goldens ? `⭐ ${s.goldens}` : '', s.fevers ? `🔥 Fever ×${s.fevers}` : ''].filter(Boolean).join('  ');
+    lines = [`🐍 Coil Rush · ${title}`, `${game.score.toLocaleString()} pts · ×${s.maxCombo} combo · ${time}`, extras];
+  }
+  lines.push(url ? `Beat me: ${url}` : 'Beat my score!');
+  return lines.filter(Boolean).join('\n');
+}
+$('btnShare').onclick = async () => {
+  const text = shareMessage();
+  if (navigator.share) {
+    try { await navigator.share({ text }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(text); toast('Copied! Paste it anywhere to challenge your friends.', 'mint'); return; }
+  catch (e) {}
+  const box = $('shareText'); box.value = text; box.hidden = false; box.focus(); box.select();
+  toast('Copy the text below to share it');
+};
+
 // ---------- coach (Claude) ----------
 $('btnCoach').onclick = async () => {
   const sample = online?.sample; if (!sample) return;
@@ -836,6 +951,8 @@ setInterval(() => {
   $('onlineText').textContent = o.playing > 0 ? `${o.here} ${label} · ${o.playing} playing` : `${o.here} ${label} now`;
 }, 1500);
 setInterval(() => { if (state === 'playing') renderMissions(); }, 1000);
+// Deep links from shared results: #daily or #levels open that mode's card.
+if (location.hash === '#daily' || location.hash === '#levels') { selMode = location.hash.slice(1); renderBests(); }
 setState('menu');
 requestAnimationFrame(frame);
 
@@ -852,6 +969,8 @@ initOnline().then(async api => {
   } else if (api.uid && profile.games > 0) api.saveProfile(profile);
   await api.loadMine();
   if (api.sample) $('coach').hidden = false;
+  if (api.payments) renderPlusUI();
+  if (location.hash === '#plus-thanks') confirmPurchase();
   if (api.auth) {
     $('tabBtn-live').hidden = false; $('lbLevels').hidden = false;
     renderAcct();

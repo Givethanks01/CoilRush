@@ -128,7 +128,9 @@ async function initNetlify() {
   } catch (e) { return null; }
 
   let auth = LS.get('coilrush.auth');           // { token, user: { id, name } }
-  let mine = null, counts = null, status = 'menu', lastBeat = 0, feedData = null;
+  let mine = null, counts = null, status = 'menu', lastBeat = 0, feedData = null, plus = false;
+  let payments = { enabled: false };
+  try { const c = await (await fetch('/api/config', { cache: 'no-store' })).json(); if (c.plus) payments = c.plus; } catch (e) {}
   const names = new Map(), authFns = new Set(), feedFns = new Set(), boardFns = [];
   const cid = clientId();
 
@@ -144,7 +146,7 @@ async function initNetlify() {
     return data;
   }
   function setAuth(a) {
-    auth = a; LS.set('coilrush.auth', a); mine = null;
+    auth = a; LS.set('coilrush.auth', a); mine = null; plus = false;
     authFns.forEach(fn => { try { fn(a ? a.user : null); } catch (e) {} });
   }
 
@@ -161,9 +163,22 @@ async function initNetlify() {
       onChange(fn) { authFns.add(fn); },
     },
 
+    // Coil Rush Plus
+    get payments() { return payments; },
+    get isPlus() { return plus; },
+    buyUrl() {
+      if (!payments.enabled || !auth) return null;
+      return payments.link + (payments.link.includes('?') ? '&' : '?') + 'client_reference_id=' + encodeURIComponent(auth.user.id);
+    },
+    async refreshMe() {
+      if (!auth) return false;
+      try { const r = await call('me'); mine = r.scores; plus = !!r.plus; } catch (e) {}
+      return plus;
+    },
+
     async loadProfile() {
       if (!auth) return null;
-      try { const r = await call('me'); mine = r.scores; return r.profile; } catch (e) { return null; }
+      try { const r = await call('me'); mine = r.scores; plus = !!r.plus; return r.profile; } catch (e) { return null; }
     },
     saveProfile(p) {
       if (!auth) return;
@@ -176,7 +191,7 @@ async function initNetlify() {
     },
     async loadMine() {
       if (!auth) return;
-      try { mine = (await call('me')).scores; } catch (e) {}
+      try { const r = await call('me'); mine = r.scores; plus = !!r.plus; } catch (e) {}
     },
     async submit(mode, score, rank, skin, seconds) {
       if (!auth || mode === 'zen') return null;
@@ -224,7 +239,7 @@ async function initNetlify() {
     for (const [which, board] of [['daily', 'daily'], ['all', 'endless'], ['levels', 'levels']]) {
       try {
         const r = await call('leaderboard?board=' + board);
-        const rows = r.rows.map(x => { names.set(x.id, x.name); return { id: x.id, score: safeNum(x.score), level: safeNum(x.rank), cleared: safeNum(x.cleared), name: x.name }; });
+        const rows = r.rows.map(x => { names.set(x.id, x.name); return { id: x.id, score: safeNum(x.score), level: safeNum(x.rank), cleared: safeNum(x.cleared), name: x.name, plus: !!x.plus }; });
         boardFns.forEach(fn => fn(which, { state: 'ready', rows }));
       } catch (e) { boardFns.forEach(fn => fn(which, { state: 'error', rows: null })); }
     }

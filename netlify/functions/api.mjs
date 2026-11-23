@@ -1,4 +1,6 @@
-// Coil Rush API: one Netlify Function serving /api/*. Storage is Netlify Blobs, so there's
+// Coil Rush API: one Netlify Function serving /api/*.
+// Coil Rush Plus (optional): set STRIPE_PAYMENT_LINK and STRIPE_WEBHOOK_SECRET to turn the
+// paywall on. Without them the game stays fully free and no Plus UI is shown. Storage is Netlify Blobs, so there's
 // no external database to set up. Accounts are username + password only (scrypt-hashed);
 // sessions are HMAC-signed tokens. Set SESSION_SECRET in Netlify's environment variables to
 // pin the signing key; if it's missing, a random key is generated once and kept in Blobs.
@@ -128,11 +130,12 @@ async function login(req) {
 async function me(req) {
   const s = await session(req);
   if (!s) return fail(401, 'Sign in again.');
-  const [profile, scores] = await Promise.all([
+  const [profile, scores, plus] = await Promise.all([
     store('profiles').get(s.id, { type: 'json' }),
     store('scores').get(s.id, { type: 'json' }),
+    store('plus').get(s.id, { type: 'json' }),
   ]);
-  return json({ user: s, profile: profile || null, scores: scores || null });
+  return json({ user: s, profile: profile || null, scores: scores || null, plus: !!(plus && plus.active) });
 }
 
 async function saveProfile(req) {
@@ -179,6 +182,8 @@ async function submitScore(req) {
   // Plausibility: even a perfect Fever run can't earn more than this per second.
   if (mode !== 'levels' && score > 80 + seconds * 400) return fail(422, 'That score could not be verified.');
 
+  const plusRec = await store('plus').get(s.id, { type: 'json' });
+  const plus = !!(plusRec && plusRec.active);
   let tooFast = false;
   const doc = await mutate('scores', s.id, d => {
     if (now - (d.lastAt || 0) < 2500) { tooFast = true; return undefined; }
@@ -186,7 +191,7 @@ async function submitScore(req) {
     if (mode === 'levels') { d.stars = Math.max(d.stars || 0, int(b.stars, 45)); d.cleared = Math.max(d.cleared || 0, int(b.cleared, 15)); }
     else if (mode === 'endless') d.endless = Math.max(d.endless || 0, score);
     else { if (d.dailyDay !== day) { d.dailyDay = day; d.daily = 0; } d.daily = Math.max(d.daily || 0, score); }
-    d.runs = (d.runs || 0) + 1; d.lastAt = now; d.rank = rank; d.skin = skin; d.name = s.name;
+    d.runs = (d.runs || 0) + 1; d.lastAt = now; d.rank = rank; d.skin = skin; d.name = s.name; d.plus = plus;
     return d;
   }, { id: s.id, name: s.name, endless: 0, daily: 0, dailyDay: '', stars: 0, cleared: 0, runs: 0, lastAt: 0 });
   if (tooFast) return fail(429, 'Scores are coming in too fast.');
@@ -194,13 +199,13 @@ async function submitScore(req) {
   let place = null, best = 0;
   if (mode === 'levels') {
     best = doc.stars;
-    place = await upsertBoard('levels', { id: s.id, name: s.name, score: doc.stars, cleared: doc.cleared, rank, skin, at: now },
+    place = await upsertBoard('levels', { id: s.id, name: s.name, score: doc.stars, cleared: doc.cleared, rank, skin, plus, at: now },
       (n, o) => n.score > o.score || (n.score === o.score && n.cleared > o.cleared));
     if (b.won && Number.isFinite(b.level)) await pushFeed({ id: s.id, name: s.name, mode, level: int(b.level, 15), stars: int(b.levelStars, 3), at: now });
   } else {
     best = mode === 'endless' ? doc.endless : doc.daily;
     const key = mode === 'endless' ? 'endless' : 'daily-' + day;
-    place = await upsertBoard(key, { id: s.id, name: s.name, score: best, rank, skin, at: now }, (n, o) => n.score > o.score);
+    place = await upsertBoard(key, { id: s.id, name: s.name, score: best, rank, skin, plus, at: now }, (n, o) => n.score > o.score);
     if (score > 0) await pushFeed({ id: s.id, name: s.name, mode, score, at: now });
   }
   await Promise.all([bump('stats', { runs: 1 }), bump('day-' + day, { runs: 1 })]);
@@ -212,7 +217,7 @@ async function leaderboard(url) {
   const day = today();
   const key = board === 'daily' ? 'daily-' + day : board === 'levels' ? 'levels' : 'endless';
   const rows = (await store('boards').get(key, { type: 'json' })) || [];
-  return json({ board, day, rows: rows.map(({ id, name, score, cleared, rank, skin }) => ({ id, name, score, cleared: cleared || 0, rank, skin })) });
+  return json({ board, day, rows: rows.map(({ id, name, score, cleared, rank, skin, plus }) => ({ id, name, score, cleared: cleared || 0, rank, skin, plus: !!plus })) });
 }
 
 async function feed() {
@@ -232,6 +237,7 @@ async function player(url) {
   return json({
     name: user.name, joined: user.createdAt, rank: d.rank || 1, skin: d.skin || 'ember', runs: d.runs || 0,
     endless: d.endless || 0, daily: d.dailyDay === today() ? d.daily || 0 : 0, stars: d.stars || 0, cleared: d.cleared || 0,
+    plus: !!d.plus,
   });
 }
 
@@ -258,6 +264,50 @@ async function presence(req) {
   }
   const playing = [...seen.values()].filter(s => s === 'playing').length;
   return json({ online: seen.size, playing });
+}
+
+// ---------- Coil Rush Plus (Stripe Payment Links) ----------
+function paymentConfig() {
+  const link = process.env.STRIPE_PAYMENT_LINK || '';
+  return { enabled: /^https:\/\/(buy|checkout)\.stripe\.com\//.test(link) && !!process.env.STRIPE_WEBHOOK_SECRET, link, price: process.env.PLUS_PRICE || '$2.99' };
+}
+async function publicConfig() {
+  const p = paymentConfig();
+  return json({ plus: p.enabled ? { enabled: true, link: p.link, price: p.price } : { enabled: false } });
+}
+
+// Stripe signs every webhook: header "t=<unix>,v1=<hex hmac of `${t}.${rawBody}`>".
+function verifyStripe(raw, header, secret) {
+  if (!header || !secret) return false;
+  const parts = header.split(',').map(x => x.split('='));
+  const t = (parts.find(([k]) => k === 't') || [])[1];
+  const sigs = parts.filter(([k]) => k === 'v1').map(([, v]) => v);
+  if (!t || !sigs.length || Math.abs(Date.now() / 1000 - Number(t)) > 300) return false;
+  const want = Buffer.from(createHmac('sha256', secret).update(`${t}.${raw}`).digest('hex'));
+  return sigs.some(v => { const got = Buffer.from(v); return got.length === want.length && timingSafeEqual(got, want); });
+}
+async function setPlus(userId, active, extra) {
+  await mutate('plus', userId, cur => ({ ...cur, ...extra, active, updatedAt: new Date().toISOString() }), {});
+  await mutate('scores', userId, d => (d.id ? { ...d, plus: active } : undefined), {});
+}
+async function stripeWebhook(req) {
+  const raw = await req.text();
+  if (!verifyStripe(raw, req.headers.get('stripe-signature'), process.env.STRIPE_WEBHOOK_SECRET)) return fail(400, 'Bad signature.');
+  let event; try { event = JSON.parse(raw); } catch { return fail(400, 'Bad JSON.'); }
+  const obj = event.data && event.data.object || {};
+  const plusStore = store('plus');
+  if ((event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') && obj.payment_status === 'paid') {
+    const uid = obj.client_reference_id;
+    if (typeof uid === 'string' && /^[0-9a-f-]{36}$/i.test(uid)) {
+      await setPlus(uid, true, { since: new Date().toISOString(), session: obj.id, paymentIntent: obj.payment_intent || null });
+      if (obj.payment_intent) await plusStore.setJSON('pi/' + obj.payment_intent, { uid });
+      console.log('[plus] granted', uid);
+    } else console.warn('[plus] paid checkout without a valid client_reference_id', obj.id);
+  } else if (event.type === 'charge.refunded' && obj.payment_intent) {
+    const link = await plusStore.get('pi/' + obj.payment_intent, { type: 'json' });
+    if (link && link.uid) { await setPlus(link.uid, false, { refundedAt: new Date().toISOString() }); console.log('[plus] revoked after refund', link.uid); }
+  }
+  return json({ received: true });
 }
 
 // Crash reports from players' browsers. They show up in Netlify → Logs → Functions → api.
@@ -289,6 +339,8 @@ export default async (req) => {
       case 'GET player': return await player(url);
       case 'POST presence': return await presence(req);
       case 'POST log': return await clientLog(req);
+      case 'GET config': return await publicConfig();
+      case 'POST stripe-webhook': return await stripeWebhook(req);
       default: return fail(404, 'Not found.');
     }
   } catch (e) {

@@ -47,6 +47,52 @@ npx netlify-cli dev     # http://localhost:8888, with the API and a local Blobs 
 
 Opening `public/index.html` directly, or serving `public/` with any static server, also works. The game then runs offline, and progress saves in the browser.
 
+## Coil Rush Plus (optional paywall)
+
+Plus is a **one-time purchase** that unlocks levels 6–15, three exclusive skins (Midnight, Molten, Prism) and a Plus badge on leaderboards and profiles. Levels 1–5, every other mode, missions and rank skins stay free.
+
+**The paywall is off until you add the two Stripe settings below.** Until then the game is fully free and shows no Plus UI.
+
+### Turn it on (about 10 minutes, no code)
+
+1. **Create a Stripe account** at stripe.com and finish account activation, so you can receive payouts.
+2. **Create a product:** Product catalog → Add product → name it "Coil Rush Plus", choose a **one-time** price (for example $2.99).
+3. **Create a Payment Link** for that product (Payment Links → New):
+   - **After payment** → "Don't show confirmation page" → **Redirect customers to your website** → `https://YOUR-SITE.netlify.app/#plus-thanks`
+   - Optional: turn on automatic tax (Stripe Tax) if you need to collect sales tax or VAT.
+   - Copy the link. It looks like `https://buy.stripe.com/...`.
+4. **Add a webhook** (Developers → Webhooks → Add endpoint):
+   - Endpoint URL: `https://YOUR-SITE.netlify.app/api/stripe-webhook`
+   - Events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `charge.refunded`
+   - Copy the **Signing secret**. It starts with `whsec_`.
+5. In **Netlify → Site configuration → Environment variables**, add:
+   - `STRIPE_PAYMENT_LINK` = the Payment Link URL
+   - `STRIPE_WEBHOOK_SECRET` = the signing secret
+   - `PLUS_PRICE` = the price label shown in the game, for example `$2.99` (optional; defaults to $2.99)
+6. **Redeploy:** Deploys → Trigger deploy → Deploy site.
+
+**Test first:** use Stripe's **test mode**, which has its own Payment Link and webhook secret. Pay with card `4242 4242 4242 4242`, any future date and any CVC. Confirm the game shows "Welcome to Plus", then switch the two settings to your live-mode values.
+
+### How it works
+
+- Players must be signed in to buy, so Plus belongs to their account and works on every device. Guests are asked to create a free account first.
+- The game sends players to your Payment Link with `client_reference_id=<their account id>`. When Stripe confirms the payment, it calls `/api/stripe-webhook`. The function checks Stripe's signature and marks that account as Plus.
+- A refund in Stripe (`charge.refunded`) removes Plus automatically.
+- To grant or remove Plus by hand, open Netlify → your site → **Blobs** → store `plus`. Each account id has a record with `"active": true` or `false`.
+
+## Sharing
+
+After every run (except Zen) there's a **Share** button. On phones it opens the share sheet; elsewhere it copies a message like:
+
+```
+🐍 Coil Rush · Daily Run 2026-11-23
+1,240 pts · ×6 combo · 2m 31s
+🍓 34  ⭐ 3  🔥 Fever ×1
+Beat me: https://your-site.netlify.app/#daily
+```
+
+The `#daily` link (or `#levels`) opens the game with that mode selected, so friends can play the same Daily Run straight away.
+
 ## Troubleshooting
 
 | What players see | Likely cause | Fix |
@@ -57,6 +103,8 @@ Opening `public/index.html` directly, or serving `public/` with any static serve
 | Scores missing from the leaderboard | An old build lost writes when players finished at the same moment (fixed in v0.3) | Redeploy. Future scores are kept; anyone missing just plays one more run |
 | Someone's progress showed up on another account | An old build shared one save slot per device (fixed in v0.3) | Redeploy. Each account now has its own slot |
 | Game froze when rocks appeared (older iPhones / Android) | Old browsers lack `roundRect` (fixed in v0.3) | Redeploy |
+| Paid, but Plus didn't unlock | The webhook isn't reaching the site, or the secret is wrong | Stripe → Developers → Webhooks → your endpoint shows failed attempts. Check the URL ends in `/api/stripe-webhook` and that `STRIPE_WEBHOOK_SECRET` matches, then click **Resend** on the failed event |
+| No Plus button anywhere | Paywall is off | Add both `STRIPE_PAYMENT_LINK` and `STRIPE_WEBHOOK_SECRET`, then redeploy |
 
 **Crash reports:** errors in players' browsers are sent to the function and logged. To see them, open your site in Netlify → **Logs → Functions → api** and look for lines starting `[client error]`. They include the error, where it happened, the game state and the browser.
 
@@ -94,6 +142,9 @@ coil-rush/
 | `GET /api/feed` | – | Latest 40 runs plus `{players, runs, runsToday}` |
 | `GET /api/player?name=` | – | Public profile |
 | `POST /api/presence` `{cid, status}` | – | Heartbeat; returns `{online, playing}` |
+| `GET /api/config` | – | Whether Plus is on, plus the payment link and price |
+| `POST /api/stripe-webhook` | Stripe signature | Grants Plus on a paid checkout and removes it on a refund |
+| `POST /api/log` | – | Records crash reports from players' browsers in the function logs |
 
 ### Storage (Netlify Blobs stores)
 
@@ -129,6 +180,7 @@ coil-rush/
 
 ## Changelog
 
+- **v0.4**: Coil Rush Plus (Stripe Payment Links + verified webhook, refunds handled, Plus badge, 3 exclusive skins, levels 6–15), Share button with `#daily` and `#levels` deep links.
 - **v0.3** (reliability):
   - Atomic, retried writes for leaderboards, feed, stats and score records, so nothing is lost when players finish at the same time
   - Username sign-ups are claimed atomically

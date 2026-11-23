@@ -6,6 +6,10 @@ export const SKINS = [
   { id: 'citrus', name: 'Citrus',     unlock: 5,  stops: ['#fff07a', '#ff7a3d'] },
   { id: 'aurora', name: 'Aurora',     unlock: 8,  aurora: true, stops: ['#7af0cf', '#c6a2ff', '#ff8fb0'] },
   { id: 'frost',  name: 'Frost',      unlock: 12, stops: ['#ffffff', '#9fb4ff'], sparkle: true },
+  // Coil Rush Plus exclusives (only shown when the paywall is switched on)
+  { id: 'midnight', name: 'Midnight', unlock: 1, plus: true, stops: ['#7cc4ff', '#5b5bff', '#b84dff'], sparkle: true },
+  { id: 'molten',   name: 'Molten',   unlock: 1, plus: true, stops: ['#fff3a0', '#ff9a1f', '#e0204a'] },
+  { id: 'prism',    name: 'Prism',    unlock: 1, plus: true, aurora: true, stops: ['#ff6b8a', '#ffd36b', '#6bffb0', '#6bc8ff', '#c46bff'] },
 ];
 
 export const POWER_INFO = {
