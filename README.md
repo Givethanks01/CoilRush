@@ -267,6 +267,7 @@ coil-rush/
 
 ## Changelog
 
+- **v0.8.2**: On iPhones running the game from the Home Screen, content now stays clear of the status bar and home indicator, so the Messages title, close (×) and back buttons are tappable. Close and back buttons are bigger.
 - **v0.8.1**: On phones the header badge row (online count, account, rank, chat, options) scrolls sideways and starts with the online count. Before, items overflowed off the left edge and couldn't be reached. The Options panel now opens at page level, so it's never clipped.
 - **v0.8**: Player-to-player messages (inbox, unread badges, fast refresh while open, push notifications, "Seen", quick replies, block and report, rate limits). Background polling pauses or slows when the tab is hidden.
 - **v0.7**: Push notifications for challenges (challenged, accepted, new best time, result), a service worker, an installable web app (manifest + icons), an iPhone Home Screen guide, tab-title counts and a background-tab fallback.

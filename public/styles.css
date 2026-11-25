@@ -572,3 +572,22 @@ h3.sub { margin: 4px 0 -4px; font-size: 12px; font-weight: 700; text-transform: 
   .modal.drawer { grid-template-columns: minmax(0, 1fr); padding: 0; }
   .chat-sheet { height: 100dvh; border-radius: 0; border: 0; }
 }
+
+/* ---------- iPhone notch / status bar (Home Screen app) ----------
+   Installed to the Home Screen the game draws edge to edge under the status bar, so keep
+   content clear of it. In a normal browser tab these stay 0. */
+:root { --sat: 0px; --sab: 0px; --sal: 0px; --sar: 0px; }
+@media (display-mode: standalone), (display-mode: fullscreen) {
+  :root { --sat: env(safe-area-inset-top, 0px); --sab: env(safe-area-inset-bottom, 0px); --sal: env(safe-area-inset-left, 0px); --sar: env(safe-area-inset-right, 0px); }
+}
+.app { padding-top: calc(14px + var(--sat)); padding-bottom: calc(28px + var(--sab)); padding-left: max(16px, var(--sal)); padding-right: max(16px, var(--sar)); }
+.modal { padding: max(16px, calc(var(--sat) + 8px)) max(16px, var(--sar)) max(16px, calc(var(--sab) + 8px)) max(16px, var(--sal)); }
+.modal.drawer { padding-top: max(12px, calc(var(--sat) + 8px)); padding-bottom: max(12px, calc(var(--sab) + 8px)); }
+.chat-sheet { height: auto; max-height: none; align-self: stretch; }
+@media (max-width: 560px) {
+  .modal.drawer { padding: 0; }
+  .chat-sheet { height: 100dvh; padding-top: var(--sat); padding-left: var(--sal); padding-right: var(--sar); box-sizing: border-box; }
+  .chat-compose { padding-bottom: calc(12px + var(--sab)); }
+}
+/* bigger tap targets for closing and going back */
+.chat-head .sheet-x.static, .chat-back { width: 42px; height: 42px; font-size: 26px; }

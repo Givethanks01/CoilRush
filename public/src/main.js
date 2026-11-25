@@ -1405,6 +1405,7 @@ async function openThread(name) {
   } catch (e) {
     $('chatSub').textContent = '';
     $('chatMsgs').replaceChildren(el('p', 'msg-hint', e.message || 'Could not open this chat.'));
+    $('chatForm').hidden = true; $('chatQuick').hidden = true;
     return;
   }
   clearInterval(chatTimer);
