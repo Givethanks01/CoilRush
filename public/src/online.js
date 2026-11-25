@@ -121,6 +121,9 @@ export function avatarFor(name) {
   return 'data:image/svg+xml,' + encodeURIComponent(svg);
 }
 
+// Run fn every ms, but skip while the tab is hidden: background tabs cost function calls for nothing.
+export function everyVisible(fn, ms) { return setInterval(() => { if (!document.hidden) fn(); }, ms); }
+
 async function initNetlify() {
   try {
     const r = await fetch('/api/health', { cache: 'no-store' });
@@ -160,6 +163,7 @@ async function initNetlify() {
 
   let chain = Promise.resolve(), saveTimer = null, pending = null;
   const api = {
+    everyVisible,
     kind: 'netlify', sample: null, hasBoard: true, hasLevelsBoard: true, hasLive: true, hasRoom: true,
     get uid() { return auth ? auth.user.id : null; },
 
@@ -254,6 +258,16 @@ async function initNetlify() {
       },
     },
 
+    // Direct messages
+    hasChat: true,
+    chat: {
+      inbox: () => call('chat/inbox'),
+      thread: (name, since = 0) => call(`chat/thread?with=${encodeURIComponent(name)}&since=${since}`),
+      send: (to, text) => call('chat/send', { method: 'POST', body: { to, text } }).then(r => r.message),
+      block: (name, block = true) => call('chat/block', { method: 'POST', body: { name, block } }),
+      report: (name, reason) => call('chat/report', { method: 'POST', body: { name, reason } }),
+    },
+
     // Head-to-head challenges (need an account)
     hasChallenges: true,
     challenges: {
@@ -302,7 +316,7 @@ async function initNetlify() {
       return safeNum(mine.endless);
     },
 
-    watchBoards(cb) { boardFns.push(cb); refreshBoards(); setInterval(refreshBoards, 20000); },
+    watchBoards(cb) { boardFns.push(cb); refreshBoards(); everyVisible(refreshBoards, 20000); },
     async profiles(ids) {
       const out = {};
       for (const id of ids) { const n = names.get(id) || ''; out[id] = { id, name: n, avatarUrl: n ? avatarFor(n) : '' }; }
@@ -350,8 +364,8 @@ async function initNetlify() {
     lastBeat = now;
     try { counts = await call('presence', { method: 'POST', body: { cid, status } }); } catch (e) {}
   }
-  beat(); setInterval(beat, 30000);
-  refreshFeed(); setInterval(refreshFeed, 20000);
+  beat(); everyVisible(beat, 30000);
+  refreshFeed(); everyVisible(refreshFeed, 20000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { beat(); refreshFeed(); } });
   return api;
 }

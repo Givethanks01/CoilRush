@@ -573,6 +573,115 @@ async function getChallenge(url) {
   return json({ challenge: chView(v) });
 }
 
+// ---------- direct messages ----------
+// One document per pair of players (last 200 messages) plus a small inbox per player.
+// Clients check every few seconds while a chat is open; push notifications cover the rest.
+const convId = (a, b) => [a, b].sort().join('~');
+const MAX_MSG = 500;
+async function userByName(name) {
+  if (!NAME_RE.test(name || '')) return null;
+  const u = await store('users').get('name/' + String(name).toLowerCase(), { type: 'json' });
+  return u ? { id: u.id, name: u.name } : null;
+}
+async function blockedBy(userId) { return (await store('chat').get('block/' + userId, { type: 'json' })) || []; }
+
+async function chatSend(req) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in to send messages.');
+  const b = await body(req, 4000);
+  const text = String(b.text || '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  if (!text) return fail(400, 'Type a message first.');
+  if (text.length > MAX_MSG) return fail(400, `Messages can be up to ${MAX_MSG} characters.`);
+  const to = await userByName(b.to);
+  if (!to) return fail(404, 'No player with that name.');
+  if (to.id === s.id) return fail(400, "You can't message yourself.");
+  const [theirBlocks, myBlocks] = await Promise.all([blockedBy(to.id), blockedBy(s.id)]);
+  if (myBlocks.includes(to.id)) return fail(403, `You blocked ${to.name}. Unblock them to send messages.`);
+  if (theirBlocks.includes(s.id)) return fail(403, "You can't message this player.");
+  const cid = convId(s.id, to.id), now = Date.now();
+  const msg = { id: randomBytes(6).toString('base64url'), from: s.id, text, at: now };
+  let limited = null;
+  await mutate('chat', 't/' + cid, c => {
+    const mine = (c.m || []).filter(m => m.from === s.id);
+    const last = mine[mine.length - 1];
+    if (last && now - last.at < 600) { limited = 'Slow down a little.'; return undefined; }
+    if (mine.filter(m => now - m.at < 60e3).length >= 20) { limited = 'You are sending messages too fast. Wait a minute.'; return undefined; }
+    limited = null;
+    return { p: { [s.id]: s.name, [to.id]: to.name }, m: [...(c.m || []), msg].slice(-200), updatedAt: now };
+  }, {});
+  if (limited) return fail(429, limited);
+  const preview = text.length > 90 ? text.slice(0, 89) + '…' : text;
+  await mutate('chat', 'inbox/' + s.id, ib => ({ ...ib, [cid]: { ...(ib[cid] || {}), with: to, last: { text: preview, from: s.id, at: now }, unread: 0, seenAt: now, updatedAt: now } }), {});
+  let shouldPush = false;
+  await mutate('chat', 'inbox/' + to.id, ib => {
+    const e = ib[cid] || {};
+    const watching = e.seenAt && now - e.seenAt < 8000;          // they have this chat open right now
+    shouldPush = !watching && !(e.lastPushAt && now - e.lastPushAt < 45e3);
+    return { ...ib, [cid]: { ...e, with: { id: s.id, name: s.name }, last: { text: preview, from: s.id, at: now }, unread: (e.unread || 0) + 1, updatedAt: now, ...(shouldPush ? { lastPushAt: now } : {}) } };
+  }, {});
+  if (shouldPush) await notify(to.id, { title: s.name, body: preview, url: '/#chat-' + s.name, tag: 'chat-' + cid });
+  return json({ message: msg });
+}
+
+async function chatThread(req, url) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in to read messages.');
+  const other = await userByName(url.searchParams.get('with'));
+  if (!other) return fail(404, 'No player with that name.');
+  const cid = convId(s.id, other.id), since = Number(url.searchParams.get('since')) || 0, now = Date.now();
+  const chat = store('chat');
+  const [conv, mine, theirs, myBlocks, theirBlocks] = await Promise.all([
+    chat.get('t/' + cid, { type: 'json' }), chat.get('inbox/' + s.id, { type: 'json' }), chat.get('inbox/' + other.id, { type: 'json' }),
+    blockedBy(s.id), blockedBy(other.id),
+  ]);
+  const all = (conv && conv.m) || [];
+  const messages = since ? all.filter(m => m.at > since) : all.slice(-60);
+  const e = (mine || {})[cid];
+  if (e && (e.unread || !e.seenAt || now - e.seenAt > 6000))   // mark read / "I'm watching" without writing on every check
+    await mutate('chat', 'inbox/' + s.id, ib => (ib[cid] ? { ...ib, [cid]: { ...ib[cid], unread: 0, seenAt: now } } : undefined), {});
+  else if (!e && all.length) await mutate('chat', 'inbox/' + s.id, ib => ({ ...ib, [cid]: { with: other, unread: 0, seenAt: now, updatedAt: all[all.length - 1].at, last: null } }), {});
+  return json({ with: other, messages, otherSeenAt: ((theirs || {})[cid] || {}).seenAt || 0,
+    blocked: { byMe: myBlocks.includes(other.id), byThem: theirBlocks.includes(s.id) }, now });
+}
+
+async function chatInbox(req) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in to see messages.');
+  const ib = (await store('chat').get('inbox/' + s.id, { type: 'json' })) || {};
+  const convs = Object.values(ib).filter(c => c.last).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50)
+    .map(c => ({ with: c.with, last: c.last, unread: c.unread || 0, updatedAt: c.updatedAt }));
+  return json({ conversations: convs, unread: convs.reduce((n, c) => n + c.unread, 0) });
+}
+
+async function chatBlock(req) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in first.');
+  const { name = '', block = true } = await body(req, 500);
+  const other = await userByName(name);
+  if (!other || other.id === s.id) return fail(404, 'No player with that name.');
+  await mutate('chat', 'block/' + s.id, list => {
+    const has = list.includes(other.id);
+    if (block && !has) return [...list, other.id].slice(-500);
+    if (!block && has) return list.filter(x => x !== other.id);
+    return undefined;
+  }, []);
+  return json({ ok: true, blocked: !!block });
+}
+
+async function chatReport(req) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in first.');
+  const { name = '', reason = '' } = await body(req, 2000);
+  const other = await userByName(name);
+  if (!other) return fail(404, 'No player with that name.');
+  const conv = await store('chat').get('t/' + convId(s.id, other.id), { type: 'json' });
+  const recent = ((conv && conv.m) || []).filter(m => m.from === other.id).slice(-10);
+  const report = { at: new Date().toISOString(), by: s.name, about: other.name, reason: String(reason).slice(0, 300), recent };
+  await mutate('meta', 'reports', list => [report, ...list].slice(0, 200), []);
+  console.warn('[report]', JSON.stringify(report));
+  return json({ ok: true });
+}
+
 // Current #1s, for crowns.
 async function champions() {
   const b = store('boards');
@@ -612,6 +721,11 @@ export default async (req) => {
       case 'POST log': return await clientLog(req);
       case 'GET config': return await publicConfig();
       case 'GET claim': return await claimStatus(url);
+      case 'POST chat/send': return await chatSend(req);
+      case 'GET chat/thread': return await chatThread(req, url);
+      case 'GET chat/inbox': return await chatInbox(req);
+      case 'POST chat/block': return await chatBlock(req);
+      case 'POST chat/report': return await chatReport(req);
       case 'GET push/key': return await pushKey();
       case 'POST push/subscribe': return await pushSubscribe(req);
       case 'POST push/unsubscribe': return await pushUnsubscribe(req);

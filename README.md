@@ -136,6 +136,22 @@ Tapping a notification opens the game on the Challenges tab.
 - **No setup needed:** the notification keys (VAPID) are generated once and stored in Netlify Blobs. To use your own, set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and optionally `VAPID_SUBJECT` (a `mailto:` or `https:` contact). Without them, the site's own URL is used as the contact.
 - **Devices:** each player can have up to 6 devices. Devices that stop accepting notifications are removed automatically.
 
+## Messages (player chat)
+
+Signed-in players can **message each other directly**.
+
+- **Where:** the chat button in the header (with an unread badge), **Message** on any player profile, Message on challenges, or a username typed into the inbox.
+- **Speed:** while a chat is open, new messages appear within about 2.5 seconds. Otherwise the inbox is checked every 20 seconds (once a minute in a background tab).
+- **Notifications:** players with notifications on get a push notification for new messages, at most one per conversation every 45 seconds, and none while they're looking at that chat. Tapping it opens the conversation (`#chat-<username>`).
+- **In a conversation:** "Seen" receipts, quick replies (GG! 👏, Rematch? ⚔️, Nice run 🔥…), a ⚔️ button to challenge from the chat, and the player's profile one tap away.
+- **Safety:**
+  - Messages are plain text only (shown as text, never as HTML) and at most 500 characters.
+  - Rate limits apply: at least 0.6s between messages, and 20 per minute.
+  - **Block** stops all messages both ways; **Report** saves the last messages from that player to the `reports` record in Blobs (store `meta`) and to the function logs (`[report]`).
+- **Storage:** one record per pair of players keeps the last 200 messages, plus a small inbox per player. To keep function usage down, all background checks pause or slow down while the game tab is hidden.
+
+**About "real time" on Netlify:** Netlify Functions can't hold connections open, so chat checks for new messages frequently instead. Each check is a function call, so watch your usage in Netlify (Usage & billing) as the player count grows. If chat gets busy, the next step is a realtime service (Ably, Pusher, or Supabase Realtime) for instant delivery.
+
 ## Crowns
 
 The **#1 player on each leaderboard** (Today, All-time and Levels) gets a gold crown. It appears:
@@ -199,6 +215,11 @@ coil-rush/
 | `POST /api/presence` `{cid, status}` | – | Heartbeat; returns `{online, playing}` |
 | `GET /api/config` | – | Whether Plus is on, plus the payment link and price |
 | `GET /api/claim?c=` | – | Whether a guest purchase has been paid |
+| `GET /api/chat/inbox` | ✓ | Your conversations and unread counts |
+| `GET /api/chat/thread?with=<name>&since=<ms>` | ✓ | Messages (new ones since a time), marks them read, and the other player's "seen" time |
+| `POST /api/chat/send` `{to, text}` | ✓ | Sends a message |
+| `POST /api/chat/block` `{name, block}` | ✓ | Blocks or unblocks a player |
+| `POST /api/chat/report` `{name, reason}` | ✓ | Reports a player |
 | `GET /api/push/key` | – | The public key the browser needs to subscribe |
 | `POST /api/push/subscribe` `{subscription}` | ✓ | Turns on notifications for this device |
 | `POST /api/push/unsubscribe` `{endpoint}` | ✓ | Turns them off for this device |
@@ -246,6 +267,7 @@ coil-rush/
 
 ## Changelog
 
+- **v0.8**: Player-to-player messages (inbox, unread badges, fast refresh while open, push notifications, "Seen", quick replies, block and report, rate limits). Background polling pauses or slows when the tab is hidden.
 - **v0.7**: Push notifications for challenges (challenged, accepted, new best time, result), a service worker, an installable web app (manifest + icons), an iPhone Home Screen guide, tab-title counts and a background-tab fallback.
 - **v0.6**: Challenges (500/1,000/2,000/3,000 races on a shared seed, by username or link, notifications, results in the feed, challenge wins on profiles) and crowns for every #1.
 - **v0.5**:

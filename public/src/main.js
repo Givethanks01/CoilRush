@@ -711,7 +711,9 @@ addEventListener('pointerdown', () => unlockAudio(), { once: true });
 let openModal = null, acctMode = 'login';
 function showModal(id) {
   if (state === 'playing') setState('paused');
+  if (openModal && openModal !== id) $(openModal).hidden = true;
   openModal = id; $(id).hidden = false;
+  if (id === 'chatModal') return;
   const first = $(id).querySelector('input, button:not(.sheet-x)'); if (first) setTimeout(() => first.focus(), 30);
 }
 function closeModal() { if (openModal) { $(openModal).hidden = true; openModal = null; } }
@@ -807,6 +809,7 @@ async function onAuthChange(user) {
     }
     renderPlusUI();
     if (online.push) { await online.push.adopt(); renderNotif(); }
+    if (online.hasChat) { chatLastNotified = Date.now(); refreshInbox(); }
     if (acceptAfterLogin) { const id = acceptAfterLogin; acceptAfterLogin = null; chAct('accept', id, doc => { chInvite = null; startChallenge(doc); }); }
     else refreshChallenges();
     if (buyAfterLogin && !isPlus()) { buyAfterLogin = false; openPlus('Your account is ready'); }
@@ -814,7 +817,7 @@ async function onAuthChange(user) {
     P.useKey(P.GUEST_KEY);
     applyProfile(P.loadLocal());
     renderPlusUI();
-    renderNotif(); document.title = 'Coil Rush';
+    renderNotif(); chWaiting = 0; chatUnread = 0; $('chatBadge').hidden = true; setTitle();
   }
   renderBoard();
 }
@@ -835,6 +838,8 @@ async function openPlayer(name) {
     const me = online.auth && online.auth.user;
     $('pmActions').hidden = !(online.hasChallenges && (!me || me.id !== p.id));
     $('pmChallenge').onclick = () => { closeModal(); openChallengeForm(p.name); };
+    $('pmMessage').hidden = !online.hasChat;
+    $('pmMessage').onclick = () => { closeModal(); openChat(p.name); };
     $('pmStats').replaceChildren(...PLAYER_FIELDS.map(([k, f]) => {
       const d = el('div'); d.append(el('dt', null, k), el('dd', null, f === 'stars' ? `${p.stars} / 45` : f === 'cleared' ? `${p.cleared} / 15` : Number(p[f] || 0).toLocaleString())); return d;
     }));
@@ -1053,6 +1058,8 @@ function isChampion(id) {
 }
 
 // ---------- challenges ----------
+let chWaiting = 0;
+function setTitle() { const n = chWaiting + (typeof chatUnread === 'number' ? chatUnread : 0); document.title = n ? `(${n}) Coil Rush` : 'Coil Rush'; }
 let chList = [], chKnown = null, chTarget = 1000, chInvite = null, acceptAfterLogin = null;
 const fmtLeft = ms => { if (ms <= 0) return 'ending now'; const h = Math.floor(ms / 3.6e6), m = Math.floor((ms % 3.6e6) / 6e4); return h ? `${h}h ${m}m` : `${Math.max(1, m)}m`; };
 const fmtRes = r => (!r ? 'no runs yet' : r.reach != null ? `${r.reach.toFixed(1)}s` : `best ${Number(r.best || 0).toLocaleString()}`);
@@ -1142,6 +1149,7 @@ function chItem(c) {
     const p = line(''); p.append('You: ', el('strong', null, fmtRes(c.results[me])), ` · ${opp.name}: `, el('strong', null, fmtRes(c.results[opp.id])));
     line(`Ends in ${fmtLeft(c.deadline - Date.now())}, or as soon as you both hit ${c.target.toLocaleString()}`);
     btn(c.results[me] && c.results[me].reach != null ? 'Beat your time' : 'Play', 'primary', () => startChallenge(c));
+    if (online.hasChat) btn('Message', '', () => openChat(opp.name));
   } else {
     const r = el('div', 'ch-line ch-result');
     if (c.status === 'done') {
@@ -1150,6 +1158,7 @@ function chItem(c) {
       box.append(r);
       line(`You: ${fmtRes(c.results[me])} · ${opp.name}: ${fmtRes(c.results[opp.id])}`);
       if (opp) btn('Rematch', '', () => openChallengeForm(opp.name));
+      if (opp && online.hasChat) btn('Message', '', () => openChat(opp.name));
     } else {
       r.textContent = c.status === 'declined' ? (fromMe ? `${opp.name} declined` : 'You declined') : c.status === 'cancelled' ? 'Cancelled' : 'Expired';
       box.append(r);
@@ -1180,7 +1189,7 @@ function renderChallenges() {
   if (!chList.length) lists.append(el('p', 'ch-empty', 'No challenges yet. Pick a target above and challenge someone from the leaderboard, or send a link to a friend.'));
   const waiting = groups[0][1].length + chList.filter(c => c.status === 'active' && !(c.results[me] && c.results[me].reach != null)).length;
   $('chBadge').hidden = !waiting; $('chBadge').textContent = waiting;
-  document.title = waiting ? `(${waiting}) Coil Rush` : 'Coil Rush';
+  chWaiting = waiting; setTitle();
   $('chUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 async function refreshChallenges() {
@@ -1230,6 +1239,8 @@ function renderInvite() {
 }
 
 function openChallengeHash() {
+  const cm = location.hash.match(/^#chat-([A-Za-z0-9_]{3,16})$/);
+  if (cm && online && online.hasChat) { history.replaceState(null, '', location.pathname + location.search); openChat(cm[1]); return; }
   if (location.hash === '#challenges' && online && online.challenges) {
     history.replaceState(null, '', location.pathname + location.search);
     document.querySelector('.tabs [data-tab="challenges"]').click();
@@ -1293,8 +1304,158 @@ $('notifTest').onclick = async () => {
 };
 // A tapped notification focuses an open game tab: jump to Challenges.
 if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', ev => {
-  if (ev.data && ev.data.type === 'open') { document.querySelector('.tabs [data-tab="challenges"]')?.click(); refreshChallenges(); }
+  if (!ev.data || ev.data.type !== 'open') return;
+  const hash = new URL(ev.data.url, location.origin).hash, cm = hash.match(/^#chat-([A-Za-z0-9_]{3,16})$/);
+  if (cm) openChat(cm[1]);
+  else { document.querySelector('.tabs [data-tab="challenges"]')?.click(); refreshChallenges(); }
 });
+
+// ---------- direct messages ----------
+// While a chat is open it checks for new messages every 2.5s; otherwise the inbox is checked every
+// 20s (once a minute in a background tab) and push notifications cover the rest.
+let chatWith = null, chatMsgs = [], chatSince = 0, chatSeenAt = 0, chatBlockedState = { byMe: false, byThem: false };
+let chatUnread = 0, chatLastNotified = Date.now(), chatTimer = null, chatBusy = false;
+function slowWhenHidden(fn, ms) { let n = 0; return setInterval(() => { n++; if (!document.hidden || n % 3 === 0) fn(); }, ms); }
+const clock = t => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const ago2 = t => { const m = Math.round((Date.now() - t) / 6e4); return m < 1 ? 'now' : m < 60 ? m + 'm' : m < 1440 ? Math.round(m / 60) + 'h' : Math.round(m / 1440) + 'd'; };
+
+function openChat(name) {
+  if (!online || !online.hasChat) return;
+  showModal('chatModal');
+  if (!myId()) { showInboxView(); return; }
+  if (name) openThread(name); else showInboxView();
+}
+function showInboxView() {
+  chatWith = null; clearInterval(chatTimer);
+  $('chatInboxView').hidden = false; $('chatThreadView').hidden = true;
+  const signedIn = !!myId();
+  $('chatGuest').hidden = signedIn; $('chatNewForm').hidden = !signedIn; $('chatList').hidden = !signedIn; $('chatNewErr').textContent = '';
+  if (signedIn) refreshInbox();
+}
+async function refreshInbox() {
+  if (!online || !online.hasChat || !myId()) { chatUnread = 0; $('chatBadge').hidden = true; setTitle(); return; }
+  let data; try { data = await online.chat.inbox(); } catch (e) { return; }
+  chatUnread = data.unread; $('chatBadge').hidden = !chatUnread; $('chatBadge').textContent = chatUnread > 99 ? '99+' : chatUnread; setTitle();
+  // pop-up for new messages that arrived while you weren't looking at that chat
+  for (const c of data.conversations) {
+    if (c.unread && c.last && c.last.at > chatLastNotified && c.last.from !== myId() && !(openModal === 'chatModal' && chatWith && chatWith.toLowerCase() === c.with.name.toLowerCase())) {
+      toast(`${c.with.name}: ${c.last.text}`, 'mint'); sfx.click();
+      if (document.hidden && notifState !== 'on' && online.push) online.push.showLocal(c.with.name, c.last.text);
+    }
+  }
+  chatLastNotified = Math.max(chatLastNotified, ...data.conversations.map(c => (c.last ? c.last.at : 0)));
+  const list = $('chatList'); if (list.hidden) return;
+  if (!data.conversations.length) { list.replaceChildren(el('li', 'empty', 'No messages yet. Type a username above, or tap Message on any player profile.')); return; }
+  list.replaceChildren(...data.conversations.map(c => {
+    const li = el('li', c.unread ? 'unread' : ''), b = el('button'), img = el('img'); img.alt = ''; img.src = avatarFor(c.with.name);
+    const main = el('span', 'cl-main'), nm = el('span', 'cl-name', c.with.name);
+    if (isChampion(c.with.id)) { const cr = el('span', 'crown-ic'); cr.innerHTML = CROWN_SVG; nm.prepend(cr); }
+    main.append(nm, el('span', 'cl-last', (c.last.from === myId() ? 'You: ' : '') + c.last.text));
+    const side = el('span', 'cl-side'); side.append(el('span', null, ago2(c.updatedAt)));
+    if (c.unread) side.append(el('span', 'cl-dot', String(c.unread)));
+    b.append(img, main, side); b.onclick = () => openThread(c.with.name); li.append(b); return li;
+  }));
+}
+$('chatNewForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const n = $('chatNewName').value.trim();
+  if (!/^[A-Za-z0-9_]{3,16}$/.test(n)) { $('chatNewErr').textContent = 'Usernames are 3–16 letters, numbers or underscores.'; return; }
+  if (n.toLowerCase() === (online.auth.user.name || '').toLowerCase()) { $('chatNewErr').textContent = "That's you!"; return; }
+  $('chatNewName').value = ''; openThread(n);
+});
+
+async function openThread(name) {
+  chatWith = name; chatMsgs = []; chatSince = 0; chatSeenAt = 0;
+  $('chatInboxView').hidden = true; $('chatThreadView').hidden = false; $('chatMenu').hidden = true;
+  $('chatName').textContent = name; $('chatAva').src = avatarFor(name); $('chatSub').textContent = 'Loading…';
+  $('chatMsgs').replaceChildren(); $('chatBlocked').hidden = true; $('chatInput').value = '';
+  try {
+    const t = await online.chat.thread(name, 0);
+    if (chatWith !== name) return;
+    chatWith = t.with.name; $('chatName').textContent = t.with.name;
+    if (isChampion(t.with.id)) { const cr = el('span', 'crown-ic'); cr.innerHTML = CROWN_SVG; $('chatName').prepend(cr); }
+    $('chatSub').textContent = 'Tap for profile';
+    applyThread(t);
+    refreshInbox();
+  } catch (e) {
+    $('chatSub').textContent = '';
+    $('chatMsgs').replaceChildren(el('p', 'msg-hint', e.message || 'Could not open this chat.'));
+    return;
+  }
+  clearInterval(chatTimer);
+  chatTimer = setInterval(pollThread, 2500);
+  if (matchMedia('(pointer: fine)').matches) $('chatInput').focus();
+}
+function applyThread(t) {
+  for (const m of t.messages) if (!chatMsgs.some(x => x.id === m.id)) chatMsgs.push(m);
+  chatMsgs.sort((a, b) => a.at - b.at);
+  if (chatMsgs.length) chatSince = Math.max(chatSince, ...chatMsgs.filter(m => !m.pending).map(m => m.at));
+  chatSeenAt = t.otherSeenAt || chatSeenAt;
+  chatBlockedState = t.blocked || chatBlockedState;
+  renderMsgs();
+}
+async function pollThread() {
+  if (!chatWith || openModal !== 'chatModal' || document.hidden || chatBusy) return;
+  chatBusy = true;
+  try { const name = chatWith, t = await online.chat.thread(name, chatSince); if (chatWith === name) applyThread(t); } catch (e) {}
+  chatBusy = false;
+}
+function renderMsgs() {
+  const box = $('chatMsgs'), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60, me = myId();
+  const nodes = []; let prev = 0;
+  if (!chatMsgs.length) nodes.push(el('p', 'msg-hint', `Say hi to ${chatWith}! Messages are visible only to the two of you.`));
+  for (const m of chatMsgs) {
+    if (m.at - prev > 5 * 60e3) nodes.push(el('div', 'msg-time', clock(m.at)));
+    prev = m.at;
+    const b = el('div', 'msg' + (m.from === me ? ' mine' : '') + (m.pending ? ' pending' : '') + (m.failed ? ' failed' : ''), m.text);
+    if (m.failed) { b.title = 'Not sent. Tap to try again.'; b.onclick = () => { chatMsgs = chatMsgs.filter(x => x !== m); sendChat(m.text); }; }
+    nodes.push(b);
+  }
+  const lastMine = [...chatMsgs].reverse().find(m => m.from === me && !m.pending && !m.failed);
+  if (lastMine && chatSeenAt >= lastMine.at && chatMsgs[chatMsgs.length - 1] === lastMine) nodes.push(el('div', 'msg-seen', 'Seen'));
+  if (chatMsgs.some(m => m.failed)) nodes.push(el('div', 'msg-seen', 'Not sent. Tap the message to retry.'));
+  box.replaceChildren(...nodes);
+  if (atBottom || chatMsgs[chatMsgs.length - 1]?.from === me) box.scrollTop = box.scrollHeight;
+  const { byMe, byThem } = chatBlockedState;
+  $('chatBlocked').hidden = !(byMe || byThem);
+  $('chatBlocked').textContent = byMe ? `You blocked ${chatWith}. Unblock them from the ⋯ menu to chat.` : byThem ? "You can't message this player." : '';
+  $('chatForm').hidden = byMe || byThem; $('chatQuick').hidden = byMe || byThem;
+  $('chatBlock').textContent = byMe ? 'Unblock' : 'Block';
+}
+async function sendChat(text) {
+  text = text.trim(); if (!text || !chatWith) return;
+  const temp = { id: 'tmp' + Math.random(), from: myId(), text, at: Date.now(), pending: true };
+  chatMsgs.push(temp); renderMsgs();
+  try {
+    const m = await online.chat.send(chatWith, text);
+    chatMsgs = chatMsgs.filter(x => x !== temp);
+    if (!chatMsgs.some(x => x.id === m.id)) chatMsgs.push(m);
+    chatMsgs.sort((a, b) => a.at - b.at); chatSince = Math.max(chatSince, m.at);
+  } catch (e) {
+    temp.pending = false; temp.failed = true; toast(e.message || 'Message not sent.');
+  }
+  renderMsgs();
+}
+$('chatForm').addEventListener('submit', e => { e.preventDefault(); const v = $('chatInput').value; $('chatInput').value = ''; sendChat(v); });
+$('chatQuick').querySelectorAll('button').forEach(b => b.onclick = () => sendChat(b.textContent));
+$('chatClose').onclick = closeModal;
+$('chatBack').onclick = showInboxView;
+$('chatBtn').onclick = () => openChat();
+$('chatSignup').onclick = () => openRegister('Create a FREE account to chat with other players.', false);
+$('chatWho').onclick = () => { const n = chatWith; closeModal(); openPlayer(n); };
+$('chatChallenge').onclick = () => { const n = chatWith; closeModal(); openChallengeForm(n); };
+$('chatMore').onclick = () => { const open = $('chatMenu').hidden; $('chatMenu').hidden = !open; $('chatMore').setAttribute('aria-expanded', String(open)); };
+$('chatBlock').onclick = async () => {
+  $('chatMenu').hidden = true;
+  const block = !chatBlockedState.byMe, n = chatWith;
+  try { await online.chat.block(n, block); chatBlockedState = { ...chatBlockedState, byMe: block }; renderMsgs(); toast(block ? `${n} is blocked. They can't message you.` : `${n} is unblocked.`); }
+  catch (e) { toast(e.message || 'That did not work.'); }
+};
+$('chatReport').onclick = async () => {
+  $('chatMenu').hidden = true;
+  try { await online.chat.report(chatWith, 'Reported from chat'); toast('Thanks for reporting. We will review it. You can also block this player from the ⋯ menu.'); }
+  catch (e) { toast(e.message || 'Could not send the report.'); }
+};
 
 // ---------- coach (Claude) ----------
 $('btnCoach').onclick = async () => {
@@ -1354,7 +1515,8 @@ initOnline().then(async api => {
   else if (api.pendingClaim && !(api.auth && api.auth.user)) api.claimPaid().then(paid => { if (paid) toast('You have Plus waiting. Create your FREE account to claim it.', 'gold'); });
   if (api.auth) {
     $('tabBtn-live').hidden = false; $('lbLevels').hidden = false; $('tabBtn-challenges').hidden = false;
-    refreshChallenges(); setInterval(refreshChallenges, 20000);
+    refreshChallenges(); slowWhenHidden(refreshChallenges, 20000);
+    $('chatBtn').hidden = false; refreshInbox(); slowWhenHidden(refreshInbox, 20000);
     renderNotif();
     openChallengeHash();
     addEventListener('hashchange', openChallengeHash);   // link opened in a tab that already has the game

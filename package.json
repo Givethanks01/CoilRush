@@ -1,6 +1,6 @@
 {
   "name": "coil-rush",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "Coil Rush: a modern arcade snake game with accounts, leaderboards and live presence.",
