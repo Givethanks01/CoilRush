@@ -27,6 +27,7 @@ let online = null, onlineChecked = false;
 const renderer = new Renderer($('board'));
 let state = 'menu';          // menu | select | ready | playing | paused | dying | over
 let curLevel = 1, selLevel = 1, levelResult = null;
+let challenge = null;        // the challenge this run counts for: { id, target, opp, reach, doc }
 let selMode = 'endless';
 let game = null, mode = 'endless';
 let demo = new Game('demo', (Math.random() * 2 ** 32) >>> 0);
@@ -69,11 +70,12 @@ function setState(s) {
   online?.setStatus(s === 'playing' || s === 'ready' || s === 'paused' ? 'playing' : 'menu', s === 'menu' ? null : mode);
 }
 
-function start(m, quick = false, level = curLevel) {
+function start(m, quick = false, level = curLevel, opts = {}) {
   unlockAudio();
   if (m === 'levels' && plusLocked(level)) { openPlus(`Level ${level} is part of Plus`); return; }
   mode = m; selMode = m;
-  const seed = m === 'daily' ? hashStr('daily:' + dayKey()) : (Math.random() * 2 ** 32) >>> 0;
+  challenge = opts.challenge || null;
+  const seed = opts.seed != null ? opts.seed : m === 'daily' ? hashStr('daily:' + dayKey()) : (Math.random() * 2 ** 32) >>> 0;
   if (m === 'levels') { curLevel = selLevel = level; game = new Game(m, seed, LEVELS[level - 1]); }
   else game = new Game(m, seed);
   levelResult = null;
@@ -141,6 +143,12 @@ function endRun() {
     online?.announce(mode, game.score);
     if (res && res.then) res.then(r => { if (r && r.place && r.place <= 10) toast(`You're #${r.place} on the ${mode === 'daily' ? "today's" : 'all-time'} board!`, 'gold'); });
   }
+  if (challenge && online?.challenges) {
+    const ch = challenge;
+    online.challenges.result(ch.id, game.score, Math.round(runTime * 10) / 10, ch.reach)
+      .then(doc => { ch.doc = doc; if (challenge === ch) $('rChallenge').textContent = challengeStanding(doc); refreshChallenges(); })
+      .catch(e => { if (challenge === ch) $('rChallenge').textContent = e.message || 'Could not send your result.'; });
+  }
   if (mode === 'levels' && online?.submitLevels) {
     const lv = profile.levels;
     online.submitLevels({
@@ -156,15 +164,19 @@ function endRun() {
 const CAUSES = { wall: 'You hit the wall.', self: 'You bit your own tail.', rock: 'You crashed into a rock.' };
 function fillResults(s, newBest, xpGain) {
   const lvl = mode === 'levels' ? LEVELS[curLevel - 1] : null;
-  $('rMode').textContent = lvl ? `Level ${curLevel} · ${lvl.name}` : MODES[mode].name + (mode === 'daily' ? ` · ${dayKey()}` : '');
+  $('rMode').textContent = challenge ? `Challenge · ${challenge.target.toLocaleString()} vs ${challenge.opp}`
+    : lvl ? `Level ${curLevel} · ${lvl.name}` : MODES[mode].name + (mode === 'daily' ? ` · ${dayKey()}` : '');
+  $('rChallenge').hidden = !challenge;
+  if (challenge) $('rChallenge').textContent = 'Sending your result…';
   $('rScore').textContent = game.score.toLocaleString();
-  $('rCause').textContent = lvl && game.won ? 'Level cleared!' : lvl ? `${CAUSES[game.cause] || ''} ${game.eaten} of ${lvl.target} berries eaten.` : CAUSES[game.cause] || '';
+  $('rCause').textContent = challenge ? (challenge.reach != null ? `You hit ${challenge.target.toLocaleString()} in ${challenge.reach.toFixed(1)}s!` : `${game.score.toLocaleString()} of ${challenge.target.toLocaleString()}. ${CAUSES[game.cause] || ''}`)
+    : lvl && game.won ? 'Level cleared!' : lvl ? `${CAUSES[game.cause] || ''} ${game.eaten} of ${lvl.target} berries eaten.` : CAUSES[game.cause] || '';
   const starsEl = $('rStars');
   starsEl.hidden = !lvl;
   if (lvl) [...starsEl.children].forEach((sp, i) => { sp.classList.toggle('on', i < levelResult.stars); });
   if (lvl && levelResult.stars) for (let i = 0; i < levelResult.stars; i++) setTimeout(() => sfx.star(i), 250 + i * 180);
   $('btnLevels').hidden = !lvl;
-  $('btnAgain').firstChild.textContent = lvl ? (game.won && curLevel < 15 ? (plusLocked(curLevel + 1) ? `Unlock level ${curLevel + 1} ` : 'Next level ') : 'Retry ') : 'Play again ';
+  $('btnAgain').firstChild.textContent = challenge ? 'Try again ' : lvl ? (game.won && curLevel < 15 ? (plusLocked(curLevel + 1) ? `Unlock level ${curLevel + 1} ` : 'Next level ') : 'Retry ') : 'Play again ';
   $('shareText').hidden = true; $('btnShare').hidden = mode === 'zen';
   $('rBest').hidden = !newBest;
   $('rLen').textContent = s.length; $('rCombo').textContent = '×' + s.maxCombo;
@@ -280,6 +292,7 @@ function tick(now) {
       runTime += dt / 1000; acc += dt;
       let iv = game.interval();
       while (acc >= iv && state === 'playing') { acc -= iv; handle(game.step()); iv = game.interval(); }
+      if (state === 'playing' && challenge && challenge.reach == null && game.score >= challenge.target) challengeHit();
       if (state === 'playing') liveMissions();
       alpha = state === 'playing' ? Math.min(1, acc / iv) : 1;
     } else if (state === 'dying') {
@@ -310,9 +323,9 @@ function setText(id, v) { if (hudCache[id] !== v) { hudCache[id] = v; $(id).text
 function updateHud() {
   const live = state !== 'menu' && state !== 'select' && game;
   setText('hScore', live ? game.score.toLocaleString() : '0');
-  const lvMode = live && mode === 'levels';
-  setText('hSpeedLabel', lvMode ? `Level ${curLevel}` : 'Speed');
-  setText('hSpeed', lvMode ? `${game.eaten}/${game.target}` : live ? String(game.level) : '1');
+  const lvMode = live && mode === 'levels', chMode = live && challenge;
+  setText('hSpeedLabel', chMode ? 'Target' : lvMode ? `Level ${curLevel}` : 'Speed');
+  setText('hSpeed', chMode ? `${Math.min(game.score, challenge.target).toLocaleString()}/${challenge.target.toLocaleString()}` : lvMode ? `${game.eaten}/${game.target}` : live ? String(game.level) : '1');
   const bm = live ? mode : selMode;
   setText('hBest', (bm === 'levels' ? profile.levels.best[String(live ? curLevel : selLevel)] || 0 : bm === 'daily' ? dailyBest() : profile.best[bm] || 0).toLocaleString());
   const mult = live ? game.mult : 1;
@@ -436,7 +449,10 @@ async function renderBoard() {
       if (me) who.append(el('small', null, 'you'));
       const pts = el('span', 'pts', boardTab === 'levels' ? `★ ${r.score}` : r.score.toLocaleString());
       if (boardTab === 'levels') pts.append(el('small', null, `${r.cleared}/15`));
-      li.append(el('span', 'rank', String(i + 1)), img, who, pts);
+      const rankCell = el('span', 'rank');
+      if (i === 0) { li.classList.add('champ'); const c = el('span', 'crown-ic'); c.innerHTML = CROWN_SVG; c.title = '#1'; rankCell.append(c); rankCell.setAttribute('aria-label', 'Number 1'); }
+      else rankCell.textContent = String(i + 1);
+      li.append(rankCell, img, who, pts);
       const pname = p.name || r.name;
       if (online.player && pname) {
         li.classList.add('clickable'); li.tabIndex = 0;
@@ -497,6 +513,11 @@ $('btnLevelsBack').onclick = () => { setState('menu'); renderBests(); };
 $('btnLevels').onclick = () => openLevels();
 
 function again() {
+  if (challenge) {
+    const doc = challenge.doc;
+    if (doc && doc.status === 'active') { startChallenge(doc, true); return; }
+    challenge = null; start('endless', true); return;
+  }
   if (mode === 'levels') {
     const next = game && game.won && curLevel < 15 ? curLevel + 1 : curLevel;
     if (plusLocked(next)) { openPlus(`Level ${next} is part of Plus`); return; }
@@ -619,7 +640,8 @@ $('btnMenu').onclick = () => { setState('menu'); renderBests(); };
 
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)));
-  for (const t of ['missions', 'leaders', 'skins', 'live']) $('tab-' + t).hidden = t !== b.dataset.tab;
+  for (const t of ['missions', 'leaders', 'challenges', 'skins', 'live']) $('tab-' + t).hidden = t !== b.dataset.tab;
+  if (b.dataset.tab === 'challenges') refreshChallenges();
   try { localStorage.setItem('coilrush.tab', b.dataset.tab); } catch (e) {}
 });
 function pickBoard(which) {
@@ -719,6 +741,7 @@ function renderAcct() {
   $('acctBtn').classList.toggle('guest', !u);
   $('acctName').textContent = u ? u.name : 'Sign in';
   $('acctPlus').hidden = !(u && isPlus());
+  $('acctCrown').hidden = !(u && isChampion(u.id));
   $('acctBtn').setAttribute('aria-label', u ? `Account: ${u.name}` : 'Sign in or create an account');
   $('acctAva').style.backgroundImage = u ? `url("${avatarFor(u.name)}")` : '';
   $('acctOut').hidden = !!u; $('acctIn').hidden = !u;
@@ -783,6 +806,8 @@ async function onAuthChange(user) {
       toast('Plus unlocked on your account: levels 6 to 15 and the exclusive skins are yours', 'gold');
     }
     renderPlusUI();
+    if (acceptAfterLogin) { const id = acceptAfterLogin; acceptAfterLogin = null; chAct('accept', id, doc => { chInvite = null; startChallenge(doc); }); }
+    else refreshChallenges();
     if (buyAfterLogin && !isPlus()) { buyAfterLogin = false; openPlus('Your account is ready'); }
   } else {
     P.useKey(P.GUEST_KEY);
@@ -792,17 +817,22 @@ async function onAuthChange(user) {
   renderBoard();
 }
 
-const PLAYER_FIELDS = [['Rank', 'rank'], ['Runs', 'runs'], ['Endless best', 'endless'], ['Daily best today', 'daily'], ['Level stars', 'stars'], ['Levels cleared', 'cleared']];
+const PLAYER_FIELDS = [['Rank', 'rank'], ['Runs', 'runs'], ['Endless best', 'endless'], ['Daily best today', 'daily'], ['Level stars', 'stars'], ['Levels cleared', 'cleared'], ['Challenge wins', 'challengeWins']];
+const CROWN_NAMES = { endless: '#1 All-time', daily: '#1 Today', levels: '#1 Levels' };
 async function openPlayer(name) {
   if (!online?.player) return;
   $('pmName').textContent = name; $('pmSince').textContent = 'Loading…'; $('pmErr').textContent = '';
-  $('pmStats').replaceChildren(); $('pmAvatar').src = avatarFor(name);
+  $('pmStats').replaceChildren(); $('pmAvatar').src = avatarFor(name); $('pmCrowns').replaceChildren(); $('pmActions').hidden = true;
   showModal('playerModal');
   try {
     const p = await online.player(name);
     $('pmName').textContent = p.name;
     $('pmAvatar').src = avatarFor(p.name);
     $('pmSince').textContent = (p.plus ? 'Plus member · ' : '') + 'Playing since ' + new Date(p.joined).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    $('pmCrowns').replaceChildren(...(p.crowns || []).map(k => { const c = el('span', 'crown-chip'); c.innerHTML = CROWN_SVG; c.append(CROWN_NAMES[k] || '#1'); return c; }));
+    const me = online.auth && online.auth.user;
+    $('pmActions').hidden = !(online.hasChallenges && (!me || me.id !== p.id));
+    $('pmChallenge').onclick = () => { closeModal(); openChallengeForm(p.name); };
     $('pmStats').replaceChildren(...PLAYER_FIELDS.map(([k, f]) => {
       const d = el('div'); d.append(el('dt', null, k), el('dd', null, f === 'stars' ? `${p.stars} / 45` : f === 'cleared' ? `${p.cleared} / 15` : Number(p[f] || 0).toLocaleString())); return d;
     }));
@@ -818,6 +848,7 @@ $('findForm').addEventListener('submit', e => {
 
 const ago = t => { const s = Math.max(1, Math.round((Date.now() - t) / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : s < 86400 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`; };
 async function renderFeed(data) {
+  renderAcct();
   const o = online.online();
   $('lvOnline').textContent = o ? o.here : '–';
   $('lvPlaying').textContent = o ? o.playing : '–';
@@ -831,7 +862,11 @@ async function renderFeed(data) {
     const li = el('li'), img = el('img'); img.alt = ''; img.src = ps[e.id]?.avatarUrl || '';
     const what = el('span', 'what'), who = el('b', null, e.name);
     who.onclick = () => openPlayer(e.name);
-    what.append(who, document.createTextNode(e.mode === 'levels' ? ` cleared level ${e.level} ${'★'.repeat(e.stars || 1)}` : ` scored ${Number(e.score).toLocaleString()} in ${MODES[e.mode]?.name || 'Endless'}`));
+    if (isChampion(e.id)) { const c = el('span', 'crown-ic'); c.innerHTML = CROWN_SVG; what.append(c); }
+    const txt = e.mode === 'levels' ? ` cleared level ${e.level} ${'★'.repeat(e.stars || 1)}`
+      : e.mode === 'challenge' ? (e.draw ? ` and ${e.vs} drew a ${Number(e.target).toLocaleString()} challenge` : ` beat ${e.vs} to ${Number(e.target).toLocaleString()}${e.reach != null ? ` in ${Number(e.reach).toFixed(1)}s` : ''}`)
+      : ` scored ${Number(e.score).toLocaleString()} in ${MODES[e.mode]?.name || 'Endless'}`;
+    what.append(who, document.createTextNode(txt));
     li.append(img, what, el('time', null, ago(e.at)));
     return li;
   }));
@@ -943,11 +978,16 @@ function cardData() {
     score: game.score, skin: skin(), url: shareUrl(),
     player: u ? u.name : null, badge: u && isPlus() ? 'PLUS' : null,
     playerSub: `Rank ${P.levelInfo(profile.xp).level}` + (profile.streak > 1 ? ` · ${profile.streak}-day streak` : ''),
+    crown: !!(u && isChampion(u.id)),
   };
   if (L) return { ...base, modeLabel: `Level ${curLevel} · ${L.name}`, accent: '#7af0cf', stars: game.won ? (levelResult ? levelResult.stars : 1) : 0,
     scoreLabel: game.won ? 'points · level cleared' : `points · ${game.eaten} of ${L.target} berries`,
     stats: [['Berries', `${game.eaten}/${L.target}`], ['Combo', '×' + st.maxCombo], ['Time', fmtTime(st.seconds)]],
     cta: game.won ? 'Can you clear it?' : 'Can you do better?' };
+  if (challenge) return { ...base, modeLabel: `Challenge · ${challenge.target.toLocaleString()}`, accent: '#c6a2ff',
+    scoreLabel: challenge.reach != null ? `points · hit ${challenge.target.toLocaleString()} in ${challenge.reach.toFixed(1)}s` : 'points',
+    stats: [['Target', challenge.target.toLocaleString()], ['Time', challenge.reach != null ? challenge.reach.toFixed(1) + 's' : fmtTime(st.seconds)], ['Combo', '×' + st.maxCombo], ['Versus', challenge.opp.slice(0, 9)]],
+    cta: 'Think you are faster?' };
   return { ...base, modeLabel: mode === 'daily' ? `Daily Run · ${dayKey()}` : 'Endless', accent: mode === 'daily' ? '#ffc94a' : '#ff7a59',
     stats: [['Combo', '×' + st.maxCombo], ['Length', st.length], ['Time', fmtTime(st.seconds)], ['Golden', st.goldens]] };
 }
@@ -1001,6 +1041,198 @@ $('shareCopy').onclick = async () => {
   try { await navigator.clipboard.writeText(text); toast('Copied! Paste it anywhere to challenge your friends.', 'mint'); return; } catch (e) {}
   const box = $('shareText'); box.value = text; box.hidden = false; box.focus(); box.select();
 };
+
+// ---------- crowns ----------
+const CROWN_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5l4.6 4 4.4-6.5 4.4 6.5 4.6-4-1.8 11H4.8z" fill="currentColor"/><rect x="4.8" y="19.6" width="14.4" height="2" rx="1" fill="currentColor"/></svg>';
+function isChampion(id) {
+  if (!id) return false;
+  const ch = (online && online.champions) || {};
+  return Object.values(ch).includes(id) || ['daily', 'all', 'levels'].some(k => boards[k].rows && boards[k].rows[0] && boards[k].rows[0].id === id);
+}
+
+// ---------- challenges ----------
+let chList = [], chKnown = null, chTarget = 1000, chInvite = null, acceptAfterLogin = null;
+const fmtLeft = ms => { if (ms <= 0) return 'ending now'; const h = Math.floor(ms / 3.6e6), m = Math.floor((ms % 3.6e6) / 6e4); return h ? `${h}h ${m}m` : `${Math.max(1, m)}m`; };
+const fmtRes = r => (!r ? 'no runs yet' : r.reach != null ? `${r.reach.toFixed(1)}s` : `best ${Number(r.best || 0).toLocaleString()}`);
+const myId = () => (online && online.auth && online.auth.user ? online.auth.user.id : null);
+const chLink = id => location.origin + '/#ch-' + id;
+
+function startChallenge(doc, quick = false) {
+  const me = myId(), opp = doc.from.id === me ? doc.to : doc.from;
+  start('endless', quick, curLevel, { seed: hashStr('ch:' + doc.id), challenge: { id: doc.id, target: doc.target, opp: opp ? opp.name : 'someone', reach: null, doc } });
+  toast(`Reach ${doc.target.toLocaleString()} as fast as you can`, 'gold');
+}
+function challengeHit() {
+  challenge.reach = Math.round(runTime * 10) / 10;
+  game.won = true; game.alive = false;
+  sfx.clear(); haptic([30, 50, 30]);
+  game.snake.forEach((c, i) => { if (i % 2 === 0) renderer.burst(c.x, c.y, i % 4 ? '#ffc94a' : '#c6a2ff', 6, 1.4); });
+  toast(`${challenge.target.toLocaleString()} in ${challenge.reach.toFixed(1)}s!`, 'gold');
+  dyingT = 0; state = 'dying';
+}
+function challengeStanding(doc) {
+  const me = myId(), opp = doc.from.id === me ? doc.to : doc.from, mine = doc.results[me], theirs = opp ? doc.results[opp.id] : null;
+  if (doc.status === 'done') return doc.winner === me ? `You won the challenge against ${opp.name}!` : doc.winner ? `${opp.name} won this one. Rematch?` : 'It was a draw.';
+  const t = `You: ${fmtRes(mine)} · ${opp ? opp.name : 'Them'}: ${fmtRes(theirs)}`;
+  return `${t} · ends in ${fmtLeft(doc.deadline - Date.now())}`;
+}
+
+function openChallengeForm(name = '') {
+  document.querySelector('.tabs [data-tab="challenges"]').click();
+  $('chName').value = name; updateChButton();
+  $('tab-challenges').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (online.auth.user) setTimeout(() => $('chName').focus(), 300);
+}
+function updateChButton() {
+  const n = $('chName').value.trim();
+  $('chCreate').textContent = n ? `Challenge ${n} to ${chTarget.toLocaleString()}` : `Create a ${chTarget.toLocaleString()} challenge link`;
+}
+document.querySelectorAll('.ch-targets button').forEach(b => b.onclick = () => {
+  chTarget = +b.dataset.target;
+  document.querySelectorAll('.ch-targets button').forEach(x => x.setAttribute('aria-checked', String(x === b)));
+  updateChButton(); sfx.click();
+});
+$('chName').addEventListener('input', updateChButton);
+$('chSignup').onclick = () => openRegister('A FREE account lets you challenge players and saves your progress.', false);
+$('chForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const name = $('chName').value.trim(), btn = $('chCreate'), err = $('chErr');
+  if (name && !/^[A-Za-z0-9_]{3,16}$/.test(name)) { err.textContent = 'Usernames are 3–16 letters, numbers or underscores.'; return; }
+  err.textContent = ''; btn.disabled = true;
+  try {
+    const c = await online.challenges.create(name, chTarget);
+    $('chName').value = ''; updateChButton();
+    if (!c.to) await shareChallengeLink(c); else toast(`Challenge sent to ${c.to.name}`, 'mint');
+    await refreshChallenges();
+  } catch (ex) { err.textContent = ex.message || 'Could not create the challenge.'; }
+  finally { btn.disabled = false; }
+});
+async function shareChallengeLink(c) {
+  const text = `I challenge you to hit ${c.target.toLocaleString()} points in Coil Rush. Same board, fastest time wins. ${chLink(c.id)}`;
+  if (navigator.share) { try { await navigator.share({ text }); return; } catch (e) { if (e && e.name === 'AbortError') return; } }
+  try { await navigator.clipboard.writeText(text); toast('Challenge link copied. Send it to anyone!', 'mint'); }
+  catch (e) { toast('Copy this link: ' + chLink(c.id)); }
+}
+async function chAct(fn, id, ok) {
+  try { const c = await online.challenges[fn](id); if (ok) ok(c); await refreshChallenges(); }
+  catch (e) { toast(e.message || 'That did not work.'); await refreshChallenges(); }
+}
+
+function chItem(c) {
+  const me = myId(), fromMe = c.from.id === me, opp = fromMe ? c.to : c.from;
+  const box = el('div', 'ch-item'), top = el('div', 'ch-top'), btns = el('div', 'ch-btns');
+  const who = el('b', null, opp ? `vs ${opp.name}` : 'Open challenge link');
+  if (opp && isChampion(opp.id)) { const cr = el('span', 'crown-ic'); cr.innerHTML = CROWN_SVG; who.prepend(cr); }
+  top.append(who, el('span', 'ch-target', c.target.toLocaleString()));
+  box.append(top);
+  const line = t => { const p = el('div', 'ch-line'); p.textContent = t; box.append(p); return p; };
+  const btn = (label, cls, fn) => { const b = el('button', 'btn ' + cls, label); b.onclick = fn; btns.append(b); };
+  if (c.status === 'pending' && !fromMe) {
+    box.classList.add('incoming');
+    line(`${c.from.name} wants to race you to ${c.target.toLocaleString()} points · expires in ${fmtLeft(c.expiresAt - Date.now())}`);
+    btn('Accept and play', 'primary', () => chAct('accept', c.id, doc => startChallenge(doc)));
+    btn('Decline', '', () => chAct('decline', c.id));
+  } else if (c.status === 'pending') {
+    line(c.to ? `Waiting for ${c.to.name} to accept · expires in ${fmtLeft(c.expiresAt - Date.now())}` : `Anyone with the link can accept · expires in ${fmtLeft(c.expiresAt - Date.now())}`);
+    if (!c.to) btn('Share link', 'primary', () => shareChallengeLink(c));
+    btn('Cancel', '', () => chAct('cancel', c.id));
+  } else if (c.status === 'active') {
+    const p = line(''); p.append('You: ', el('strong', null, fmtRes(c.results[me])), ` · ${opp.name}: `, el('strong', null, fmtRes(c.results[opp.id])));
+    line(`Ends in ${fmtLeft(c.deadline - Date.now())}, or as soon as you both hit ${c.target.toLocaleString()}`);
+    btn(c.results[me] && c.results[me].reach != null ? 'Beat your time' : 'Play', 'primary', () => startChallenge(c));
+  } else {
+    const r = el('div', 'ch-line ch-result');
+    if (c.status === 'done') {
+      r.classList.add(c.winner === me ? 'win' : c.winner ? 'loss' : '');
+      r.textContent = c.winner === me ? 'You won' : c.winner ? `${opp.name} won` : 'Draw';
+      box.append(r);
+      line(`You: ${fmtRes(c.results[me])} · ${opp.name}: ${fmtRes(c.results[opp.id])}`);
+      if (opp) btn('Rematch', '', () => openChallengeForm(opp.name));
+    } else {
+      r.textContent = c.status === 'declined' ? (fromMe ? `${opp.name} declined` : 'You declined') : c.status === 'cancelled' ? 'Cancelled' : 'Expired';
+      box.append(r);
+    }
+  }
+  if (btns.children.length) box.append(btns);
+  return box;
+}
+function renderChallenges() {
+  if (!online || !online.hasChallenges) return;
+  const signedIn = !!myId();
+  $('chGuest').hidden = signedIn; $('chForm').hidden = !signedIn;
+  const lists = $('chLists'); lists.replaceChildren();
+  renderInvite();
+  if (!signedIn && chInvite && chInvite.status === 'pending') $('chGuest').hidden = true;   // the invite already has a sign-up button
+  if (!signedIn) { $('chBadge').hidden = true; return; }
+  const me = myId();
+  const groups = [
+    ['Waiting for you', chList.filter(c => c.status === 'pending' && c.from.id !== me)],
+    ['In progress', chList.filter(c => c.status === 'active')],
+    ['Sent', chList.filter(c => c.status === 'pending' && c.from.id === me)],
+    ['Finished', chList.filter(c => !['pending', 'active'].includes(c.status)).slice(0, 8)],
+  ];
+  for (const [title, items] of groups) {
+    if (!items.length) continue;
+    lists.append(el('h3', null, title), ...items.map(chItem));
+  }
+  if (!chList.length) lists.append(el('p', 'ch-empty', 'No challenges yet. Pick a target above and challenge someone from the leaderboard, or send a link to a friend.'));
+  const waiting = groups[0][1].length + chList.filter(c => c.status === 'active' && !(c.results[me] && c.results[me].reach != null)).length;
+  $('chBadge').hidden = !waiting; $('chBadge').textContent = waiting;
+  $('chUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+async function refreshChallenges() {
+  if (!online || !online.hasChallenges || !myId()) { renderChallenges(); return; }
+  try {
+    const list = await online.challenges.list();
+    const me = myId();
+    if (chKnown) {
+      for (const c of list) {
+        const prev = chKnown.get(c.id);
+        if (!prev && c.status === 'pending' && c.from.id !== me) { toast(`${c.from.name} challenged you to ${c.target.toLocaleString()}!`, 'gold'); sfx.goldenSpawn(); }
+        if (prev && prev !== 'done' && c.status === 'done') {
+          const opp = c.from.id === me ? c.to : c.from;
+          toast(c.winner === me ? `You beat ${opp.name} to ${c.target.toLocaleString()}!` : c.winner ? `${opp.name} beat you to ${c.target.toLocaleString()}` : `Your challenge with ${opp.name} was a draw`, c.winner === me ? 'gold' : '');
+        }
+        if (prev === 'pending' && c.status === 'active' && c.from.id === me) toast(`${c.to.name} accepted your ${c.target.toLocaleString()} challenge!`, 'mint');
+      }
+    }
+    chKnown = new Map(list.map(c => [c.id, c.status]));
+    chList = list;
+  } catch (e) {}
+  renderChallenges();
+}
+
+// Invite links: #ch-<id>
+function renderInvite() {
+  const box = $('chInvite');
+  if (!chInvite) { box.hidden = true; return; }
+  const c = chInvite, me = myId();
+  box.hidden = false; box.replaceChildren();
+  const p = el('p');
+  if (c.status !== 'pending' || (c.to && c.to.id !== me) || c.from.id === me) {
+    p.textContent = c.from.id === me ? 'This is your own challenge link. Send it to a friend!' : 'This challenge is no longer open.';
+    box.append(p); return;
+  }
+  p.append(el('b', null, c.from.name), ` challenges you to hit ${c.target.toLocaleString()} points. Same board, fastest time wins.`);
+  const b = el('button', 'btn primary', me ? 'Accept and play' : 'Create a FREE account to accept');
+  b.onclick = () => {
+    if (!me) { acceptAfterLogin = c.id; openRegister(`${c.from.name} challenged you. Create a FREE account to accept.`, false); return; }
+    chAct('accept', c.id, doc => { chInvite = null; startChallenge(doc); });
+  };
+  box.append(p, b);
+}
+
+function openChallengeHash() {
+  const m = location.hash.match(/^#ch-([A-Za-z0-9_-]{8,24})$/);
+  if (!m || !online || !online.challenges) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  online.challenges.get(m[1]).then(c => {
+    chInvite = c; document.querySelector('.tabs [data-tab="challenges"]').click();
+    if (c.status === 'pending' && c.from.id !== myId()) toast(`${c.from.name} challenged you! See Challenges.`, 'gold');
+    renderInvite();
+    $('chInvite').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }).catch(() => toast('That challenge link no longer works.'));
+}
 
 // ---------- coach (Claude) ----------
 $('btnCoach').onclick = async () => {
@@ -1059,7 +1291,10 @@ initOnline().then(async api => {
   if (location.hash === '#plus-thanks') confirmPurchase();
   else if (api.pendingClaim && !(api.auth && api.auth.user)) api.claimPaid().then(paid => { if (paid) toast('You have Plus waiting. Create your FREE account to claim it.', 'gold'); });
   if (api.auth) {
-    $('tabBtn-live').hidden = false; $('lbLevels').hidden = false;
+    $('tabBtn-live').hidden = false; $('lbLevels').hidden = false; $('tabBtn-challenges').hidden = false;
+    refreshChallenges(); setInterval(refreshChallenges, 20000);
+    openChallengeHash();
+    addEventListener('hashchange', openChallengeHash);   // link opened in a tab that already has the game
     renderAcct();
     api.auth.onChange(user => { onAuthChange(user).catch(e => reportError(e, 'auth')); });
     // A saved session that has expired: fall back to the guest slot.
@@ -1069,7 +1304,7 @@ initOnline().then(async api => {
   }
   if (api.hasBoard) {
     boards.daily.state = boards.all.state = 'loading';
-    api.watchBoards((which, b) => { boards[which] = b; if (which === boardTab) renderBoard(); });
+    api.watchBoards((which, b) => { boards[which] = b; if (which === boardTab) renderBoard(); renderAcct(); });
   }
   api.onRun(async ({ by, score, mode: m }) => {
     const ps = by ? await api.profiles([by]) : {};

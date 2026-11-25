@@ -234,7 +234,7 @@ async function feed() {
   const [events, stats, todayStats] = await Promise.all([
     meta.get('feed', { type: 'json' }), meta.get('stats', { type: 'json' }), meta.get('day-' + today(), { type: 'json' }),
   ]);
-  return json({ events: events || [], stats: { players: stats?.players || 0, runs: stats?.runs || 0, runsToday: todayStats?.runs || 0 } });
+  return json({ events: events || [], champions: await champions(), stats: { players: stats?.players || 0, runs: stats?.runs || 0, runsToday: todayStats?.runs || 0 } });
 }
 
 async function player(url) {
@@ -243,7 +243,10 @@ async function player(url) {
   const user = await store('users').get('name/' + name.toLowerCase(), { type: 'json' });
   if (!user) return fail(404, 'No player with that name.');
   const d = (await store('scores').get(user.id, { type: 'json' })) || {};
+  const champ = await champions();
+  const crowns = Object.entries(champ).filter(([, id]) => id === user.id).map(([k]) => k);
   return json({
+    crowns, challengeWins: d.challengeWins || 0, id: user.id,
     name: user.name, joined: user.createdAt, rank: d.rank || 1, skin: d.skin || 'ember', runs: d.runs || 0,
     endless: d.endless || 0, daily: d.dailyDay === today() ? d.daily || 0 : 0, stars: d.stars || 0, cleared: d.cleared || 0,
     plus: !!d.plus || isComped(user.name),
@@ -351,6 +354,155 @@ async function claim(req) {
   return json({ ok: false, plus: await hasPlus(s.id, s.name) });
 }
 
+// ---------- challenges ----------
+// A challenge: reach `target` points in one Endless run on a shared seed. Fastest time to the
+// target wins; it ends when both players have hit it or 24h after it was accepted (then the
+// one who hit it wins, or the higher score if nobody did). Pending invites expire after 48h.
+const TARGETS = [500, 1000, 2000, 3000];
+const CH_PLAY_MS = 24 * 3600e3, CH_PENDING_MS = 48 * 3600e3;
+const CHID_RE = /^[A-Za-z0-9_-]{8,24}$/;
+const chView = c => ({ id: c.id, target: c.target, status: c.status, from: c.from, to: c.to || null, createdAt: c.createdAt,
+  expiresAt: c.expiresAt, deadline: c.deadline || null, results: c.results || {}, winner: c.winner || null, endedAt: c.endedAt || null });
+
+function settle(c, now = Date.now()) {
+  if (c.status === 'pending' && now > c.expiresAt) { c.status = 'expired'; return true; }
+  if (c.status !== 'active') return false;
+  const a = c.results[c.from.id] || {}, b = c.results[c.to.id] || {};
+  if (now < c.deadline && !(a.reach != null && b.reach != null)) return false;
+  let winner = null;
+  if (a.reach != null && b.reach != null) winner = a.reach < b.reach ? c.from.id : b.reach < a.reach ? c.to.id : null;
+  else if (a.reach != null || b.reach != null) winner = a.reach != null ? c.from.id : c.to.id;
+  else if ((a.best || 0) !== (b.best || 0)) winner = (a.best || 0) > (b.best || 0) ? c.from.id : c.to.id;
+  c.status = 'done'; c.winner = winner; c.endedAt = now;
+  return true;
+}
+// Apply fn to a challenge atomically, settle it, and run the one-time "finished" side effects.
+async function updateChallenge(id, fn) {
+  let finished = false, error = null;
+  const doc = await mutate('challenges', 'c/' + id, cur => {
+    if (!cur.id) { error = [404, 'That challenge no longer exists.']; return undefined; }
+    const before = cur.status;
+    if (fn) { const r = fn(cur); if (typeof r === 'object' && r && r.error) { error = r.error; return undefined; } }
+    settle(cur);
+    finished = before !== 'done' && cur.status === 'done';
+    return cur;
+  }, {});
+  if (error) throw Object.assign(new Error(error[1]), { status: error[0] });
+  if (finished) {
+    const w = doc.winner, names = { [doc.from.id]: doc.from.name, [doc.to.id]: doc.to.name };
+    const loser = w ? (w === doc.from.id ? doc.to.id : doc.from.id) : null;
+    await pushFeed(w
+      ? { id: w, name: names[w], mode: 'challenge', vs: names[loser], target: doc.target, reach: doc.results[w]?.reach ?? null, at: Date.now() }
+      : { id: doc.from.id, name: doc.from.name, mode: 'challenge', vs: doc.to.name, target: doc.target, draw: true, at: Date.now() });
+    if (w) await mutate('scores', w, d => ({ endless: 0, daily: 0, dailyDay: '', stars: 0, cleared: 0, runs: 0, lastAt: 0, ...d, id: w, name: names[w], challengeWins: (d.challengeWins || 0) + 1 }), {});
+  }
+  return doc;
+}
+async function indexChallenge(userId, id) {
+  await mutate('challenges', 'u/' + userId, list => { if (list.includes(id)) return undefined; list.unshift(id); list.length = Math.min(list.length, 40); return list; }, []);
+}
+
+async function createChallenge(req) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in to challenge players.');
+  const { to = '', target } = await body(req, 1000);
+  if (!TARGETS.includes(target)) return fail(400, 'Pick a target of 500, 1,000, 2,000 or 3,000.');
+  let toUser = null;
+  if (to) {
+    if (!NAME_RE.test(to)) return fail(404, 'No player with that name.');
+    const u = await store('users').get('name/' + to.toLowerCase(), { type: 'json' });
+    if (!u) return fail(404, 'No player with that name.');
+    if (u.id === s.id) return fail(400, "You can't challenge yourself.");
+    toUser = { id: u.id, name: u.name };
+  }
+  const mine = (await store('challenges').get('u/' + s.id, { type: 'json' })) || [];
+  const docs = await Promise.all(mine.slice(0, 20).map(id => store('challenges').get('c/' + id, { type: 'json' })));
+  const open = docs.filter(c => c && c.from.id === s.id && (c.status === 'pending' || c.status === 'active') && !(c.status === 'pending' && Date.now() > c.expiresAt));
+  if (open.length >= 5) return fail(429, 'You already have 5 open challenges. Finish or cancel one first.');
+  const now = Date.now(), id = randomBytes(9).toString('base64url');
+  const doc = { id, target, status: 'pending', from: { id: s.id, name: s.name }, to: toUser, createdAt: now, expiresAt: now + CH_PENDING_MS, results: {} };
+  await store('challenges').setJSON('c/' + id, doc, { onlyIfNew: true });
+  await indexChallenge(s.id, id);
+  if (toUser) await indexChallenge(toUser.id, id);
+  return json({ challenge: chView(doc) }, 201);
+}
+
+async function challengeAction(req, action) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in first.');
+  const { id = '' } = await body(req, 500);
+  if (!CHID_RE.test(id)) return fail(404, 'That challenge no longer exists.');
+  let wasOpen = false;
+  const doc = await updateChallenge(id, c => {
+    settle(c);
+    if (action === 'accept') {
+      if (c.status !== 'pending') return { error: [409, c.status === 'expired' ? 'This challenge has expired.' : 'This challenge was already taken or closed.'] };
+      if (c.from.id === s.id) return { error: [400, "You can't accept your own challenge."] };
+      if (c.to && c.to.id !== s.id) return { error: [403, 'This challenge is for someone else.'] };
+      if (!c.to) { c.to = { id: s.id, name: s.name }; wasOpen = true; }
+      c.status = 'active'; c.deadline = Date.now() + CH_PLAY_MS;
+    } else if (action === 'decline') {
+      if (c.status !== 'pending' || !c.to || c.to.id !== s.id) return { error: [409, 'You can only decline a challenge sent to you.'] };
+      c.status = 'declined';
+    } else if (action === 'cancel') {
+      if (c.status !== 'pending' || c.from.id !== s.id) return { error: [409, 'Only waiting challenges you sent can be cancelled.'] };
+      c.status = 'cancelled';
+    }
+  });
+  if (wasOpen) await indexChallenge(s.id, id);
+  return json({ challenge: chView(doc) });
+}
+
+async function challengeResult(req) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in first.');
+  const b = await body(req, 1000);
+  if (!CHID_RE.test(b.id || '')) return fail(404, 'That challenge no longer exists.');
+  const score = int(b.score, 5_000_000), seconds = Number.isFinite(b.seconds) ? Math.max(0, b.seconds) : 0;
+  const reach = b.reach == null ? null : Number(b.reach);
+  if (score > 80 + seconds * 400) return fail(422, 'That score could not be verified.');
+  const doc = await updateChallenge(b.id, c => {
+    if (c.status !== 'active' || !c.to || ![c.from.id, c.to.id].includes(s.id)) return { error: [409, 'This challenge is not running.'] };
+    if (Date.now() > c.deadline + 120e3) return { error: [409, 'This challenge has ended.'] };
+    let r = reach;
+    if (r != null && !(Number.isFinite(r) && r > 0 && r <= seconds + 0.5 && r >= (c.target - 80) / 400 && score >= c.target)) r = null;
+    const cur = c.results[s.id] || { best: 0, reach: null, tries: 0 };
+    c.results[s.id] = { best: Math.max(cur.best || 0, score), reach: r == null ? cur.reach : cur.reach == null ? Math.round(r * 10) / 10 : Math.min(cur.reach, Math.round(r * 10) / 10), tries: (cur.tries || 0) + 1 };
+  });
+  return json({ challenge: chView(doc) });
+}
+
+async function listChallenges(req) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in first.');
+  const ids = (await store('challenges').get('u/' + s.id, { type: 'json' })) || [];
+  const docs = [];
+  for (const id of ids) {
+    let c = await store('challenges').get('c/' + id, { type: 'json' });
+    if (!c) continue;
+    if (settle({ ...c, results: { ...c.results } })) c = await updateChallenge(id);   // write the settled state once
+    docs.push(chView(c));
+  }
+  return json({ challenges: docs, now: Date.now() });
+}
+
+async function getChallenge(url) {
+  const id = url.searchParams.get('id') || '';
+  if (!CHID_RE.test(id)) return fail(404, 'That challenge no longer exists.');
+  const c = await store('challenges').get('c/' + id, { type: 'json' });
+  if (!c) return fail(404, 'That challenge no longer exists.');
+  const v = { ...c, results: { ...c.results } }; settle(v);
+  return json({ challenge: chView(v) });
+}
+
+// Current #1s, for crowns.
+async function champions() {
+  const b = store('boards');
+  const [e, l, d] = await Promise.all([b.get('endless', { type: 'json' }), b.get('levels', { type: 'json' }), b.get('daily-' + today(), { type: 'json' })]);
+  const top = rows => (rows && rows[0] ? rows[0].id : null);
+  return { endless: top(e), levels: top(l), daily: top(d) };
+}
+
 // Crash reports from players' browsers. They show up in Netlify → Logs → Functions → api.
 async function clientLog(req) {
   const b = await body(req, 6000);
@@ -382,6 +534,13 @@ export default async (req) => {
       case 'POST log': return await clientLog(req);
       case 'GET config': return await publicConfig();
       case 'GET claim': return await claimStatus(url);
+      case 'GET challenges': return await listChallenges(req);
+      case 'POST challenges': return await createChallenge(req);
+      case 'GET challenge': return await getChallenge(url);
+      case 'POST challenge/accept': return await challengeAction(req, 'accept');
+      case 'POST challenge/decline': return await challengeAction(req, 'decline');
+      case 'POST challenge/cancel': return await challengeAction(req, 'cancel');
+      case 'POST challenge/result': return await challengeResult(req);
       case 'POST claim': return await claim(req);
       case 'POST stripe-webhook': return await stripeWebhook(req);
       default: return fail(404, 'Not found.');

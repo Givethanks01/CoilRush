@@ -101,6 +101,31 @@ Beat me: https://your-site.netlify.app/#daily
 
 The `#daily` link (or `#levels`) opens the game with that mode selected, so friends can play the same Daily Run straight away.
 
+## Challenges
+
+Players can challenge each other to a race to **500, 1,000, 2,000 or 3,000 points**.
+
+- **Same board:** both players get the same seed, so it's fair.
+- **Fastest wins:** the fastest time to reach the target in one run wins. Each player can try as many times as they like; their best time counts.
+- **When it ends:** as soon as both players have hit the target, or 24 hours after it was accepted. If only one hit the target, they win. If neither did, the higher score wins. Identical times are a draw.
+- **How to start one:**
+  - Challenges tab → type a username (or leave it empty) → pick a target → send.
+  - **Challenge this player** on anyone's profile (click a name on the leaderboard or in the Live feed).
+  - Leave the name empty to get a **challenge link** anyone can accept (`https://your-site/#ch-…`). People without an account are asked to create a FREE one, then go straight into the race.
+- **Notifications:** players get pop-ups when they're challenged, when a challenge is accepted and when it's decided. A badge on the tab shows challenges waiting for them.
+- **Limits:** results feed the Live feed ("Bob beat Ann to 1,000 in 31.5s") and a **Challenge wins** count on profiles. Each player can have up to 5 open challenges, and unaccepted invites expire after 48 hours.
+- **Fair play:** scores and times are checked by the server, so impossible results are rejected.
+
+## Crowns
+
+The **#1 player on each leaderboard** (Today, All-time and Levels) gets a gold crown. It appears:
+
+- on their leaderboard row, with a gold highlight
+- next to their name in the Live feed and in Challenges
+- on their account button
+- on their profile, as "#1 All-time", "#1 Today" or "#1 Levels"
+- on their score cards
+
 ## Troubleshooting
 
 | What players see | Likely cause | Fix |
@@ -152,6 +177,11 @@ coil-rush/
 | `POST /api/presence` `{cid, status}` | – | Heartbeat; returns `{online, playing}` |
 | `GET /api/config` | – | Whether Plus is on, plus the payment link and price |
 | `GET /api/claim?c=` | – | Whether a guest purchase has been paid |
+| `GET /api/challenges` | ✓ | Your challenges, with finished ones settled automatically |
+| `POST /api/challenges` `{to?, target}` | ✓ | Creates a challenge (to a username, or an open link if `to` is empty) |
+| `GET /api/challenge?id=` | – | Public view of one challenge (for invite links) |
+| `POST /api/challenge/accept`, `/decline`, `/cancel` `{id}` | ✓ | Responds to a challenge |
+| `POST /api/challenge/result` `{id, score, seconds, reach}` | ✓ | Records a run (the time it hit the target, or its best score) |
 | `POST /api/claim` `{claim}` | ✓ | Attaches a paid guest purchase to the signed-in account |
 | `POST /api/stripe-webhook` | Stripe signature | Grants Plus on a paid checkout and removes it on a refund |
 | `POST /api/log` | – | Records crash reports from players' browsers in the function logs |
@@ -190,6 +220,7 @@ coil-rush/
 
 ## Changelog
 
+- **v0.6**: Challenges (500/1,000/2,000/3,000 races on a shared seed, by username or link, notifications, results in the feed, challenge wins on profiles) and crowns for every #1.
 - **v0.5**:
   - Score card image sharing
   - Guest checkout with automatic claim on sign-up, and a "Create a FREE account" first step in the Plus window

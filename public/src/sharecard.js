@@ -126,6 +126,11 @@ export async function makeShareCard(d) {
   if (d.player) {
     const hue = [...d.player].reduce((h, ch2) => (h * 31 + ch2.charCodeAt(0)) % 360, 7);
     ctx.fillStyle = `hsl(${hue} 70% 62%)`; ctx.beginPath(); ctx.arc(120, py, 40, 0, 7); ctx.fill();
+    if (d.crown) {   // #1 on a leaderboard: a gold crown on the avatar
+      ctx.save(); ctx.translate(120, py - 58); ctx.shadowColor = C.gold; ctx.shadowBlur = 24; ctx.fillStyle = C.gold;
+      ctx.beginPath(); ctx.moveTo(-30, -12); ctx.lineTo(-15, 2); ctx.lineTo(0, -20); ctx.lineTo(15, 2); ctx.lineTo(30, -12); ctx.lineTo(24, 18); ctx.lineTo(-24, 18); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
     ctx.fillStyle = C.ink; ctx.font = `700 32px ${BODY}`; ctx.textAlign = 'center'; ctx.fillText(d.player.slice(0, 2).toUpperCase(), 120, py + 2);
     ctx.textAlign = 'left'; ctx.fillStyle = C.text; ctx.font = `600 44px ${DISPLAY}`; ctx.fillText(d.player, 182, py - 4);
     let nx = 182 + ctx.measureText(d.player).width + 18;

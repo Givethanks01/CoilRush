@@ -14,7 +14,7 @@
     </div>
     <div class="top-right">
       <span class="online" id="online" hidden><i></i><b id="onlineText">1 here</b></span>
-      <button class="acct-btn" id="acctBtn" hidden aria-haspopup="dialog"><span class="acct-ava" id="acctAva" aria-hidden="true"></span><span id="acctName">Sign in</span><span class="plus-tag" id="acctPlus" hidden>PLUS</span></button>
+      <button class="acct-btn" id="acctBtn" hidden aria-haspopup="dialog"><span class="acct-ava" id="acctAva" aria-hidden="true"></span><span class="crown-ic" id="acctCrown" hidden title="#1 on a leaderboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5l4.6 4 4.4-6.5 4.4 6.5 4.6-4-1.8 11H4.8z" fill="currentColor"/><rect x="4.8" y="19.6" width="14.4" height="2" rx="1" fill="currentColor"/></svg></span><span id="acctName">Sign in</span><span class="plus-tag" id="acctPlus" hidden>PLUS</span></button>
       <span class="streak" id="streak" hidden title="Days in a row with at least one run"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2c1 4 5 6 5 11a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5 0 2 1 3 2 3 0-3-1-6 1-9.5z" fill="currentColor"/></svg><b id="streakN">1</b></span>
       <div class="player" title="Your level">
         <span class="lvl" id="pLevel">Lv 1</span>
@@ -149,6 +149,7 @@
             <p class="cause" id="rCause"></p>
             <div class="stars" id="rStars" hidden aria-label="Stars earned"><span></span><span></span><span></span></div>
             <span class="pill gold" id="rBest" hidden>New best</span>
+            <p class="ch-status" id="rChallenge" hidden></p>
             <dl class="rstats">
               <div><dt>Length</dt><dd id="rLen">0</dd></div>
               <div><dt>Max combo</dt><dd id="rCombo">×1</dd></div>
@@ -207,6 +208,7 @@
       <div class="tabs" role="tablist">
         <button role="tab" id="tabBtn-missions" aria-selected="true" data-tab="missions">Missions</button>
         <button role="tab" id="tabBtn-leaders" aria-selected="false" data-tab="leaders">Leaderboard</button>
+        <button role="tab" id="tabBtn-challenges" aria-selected="false" data-tab="challenges" hidden>Challenges<span class="tab-badge" id="chBadge" hidden>0</span></button>
         <button role="tab" id="tabBtn-skins" aria-selected="false" data-tab="skins">Skins</button>
         <button role="tab" id="tabBtn-live" aria-selected="false" data-tab="live" hidden>Live</button>
       </div>
@@ -233,6 +235,29 @@
         </div>
         <ol class="leaders" id="leaderList"></ol>
         <p class="note" id="leaderNote"></p>
+      </div>
+
+      <div class="panel" id="tab-challenges" role="tabpanel" hidden>
+        <div class="panel-head"><h2>Challenges</h2><span class="muted" id="chUpdated"></span></div>
+        <div class="ch-invite" id="chInvite" hidden></div>
+        <div class="ch-guest" id="chGuest" hidden>
+          <p>Challenge other players to a race: same board, first to the target score. Create a FREE account to start.</p>
+          <button class="btn primary" id="chSignup">Create a FREE account</button>
+        </div>
+        <form class="ch-new" id="chForm" novalidate>
+          <p class="ch-rules">Same board for both of you. <b>Fastest time to the target in one run wins.</b> 24 hours, unlimited tries.</p>
+          <label for="chName">Opponent</label>
+          <input id="chName" placeholder="Username, or leave empty for a link" maxlength="16" autocomplete="off" spellcheck="false" autocapitalize="off">
+          <div class="ch-targets" role="radiogroup" aria-label="Target score">
+            <button type="button" role="radio" data-target="500" aria-checked="false">500</button>
+            <button type="button" role="radio" data-target="1000" aria-checked="true">1,000</button>
+            <button type="button" role="radio" data-target="2000" aria-checked="false">2,000</button>
+            <button type="button" role="radio" data-target="3000" aria-checked="false">3,000</button>
+          </div>
+          <p class="form-err" id="chErr" role="alert"></p>
+          <button class="btn primary" id="chCreate" type="submit">Create challenge link</button>
+        </form>
+        <div class="ch-lists" id="chLists"></div>
       </div>
 
       <div class="panel" id="tab-live" role="tabpanel" hidden>
@@ -293,7 +318,9 @@
   <div class="sheet">
     <button class="sheet-x" id="pmClose" aria-label="Close">×</button>
     <div class="pm-head"><img id="pmAvatar" alt=""><div><h2 id="pmName">Player</h2><p class="muted" id="pmSince"></p></div></div>
+    <div class="crowns" id="pmCrowns"></div>
     <dl class="pstats" id="pmStats"></dl>
+    <div class="actions" id="pmActions" hidden><button class="btn primary" id="pmChallenge">Challenge this player</button></div>
     <p class="form-err" id="pmErr" role="alert"></p>
   </div>
 </div>

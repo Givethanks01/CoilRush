@@ -157,6 +157,7 @@ async function initNetlify() {
 
     auth: {
       get user() { return auth ? auth.user : null; },
+
       async login(username, password) { const r = await call('login', { method: 'POST', body: { username, password } }); setAuth(r); return r.user; },
       async register(username, password) { const r = await call('register', { method: 'POST', body: { username, password } }); setAuth(r); return r.user; },
       logout() { setAuth(null); },
@@ -197,6 +198,20 @@ async function initNetlify() {
       return plus;
     },
     get user() { return auth ? auth.user : null; },
+
+    // Head-to-head challenges (need an account)
+    hasChallenges: true,
+    challenges: {
+      list: () => call('challenges').then(r => r.challenges),
+      create: (to, target) => call('challenges', { method: 'POST', body: { to: to || '', target } }).then(r => r.challenge),
+      get: id => call('challenge?id=' + encodeURIComponent(id)).then(r => r.challenge),
+      accept: id => call('challenge/accept', { method: 'POST', body: { id } }).then(r => r.challenge),
+      decline: id => call('challenge/decline', { method: 'POST', body: { id } }).then(r => r.challenge),
+      cancel: id => call('challenge/cancel', { method: 'POST', body: { id } }).then(r => r.challenge),
+      result: (id, score, seconds, reach) => call('challenge/result', { method: 'POST', body: { id, score, seconds, reach } }).then(r => r.challenge),
+    },
+    // Current #1 player ids per board, for crowns ({endless, daily, levels})
+    get champions() { return (feedData && feedData.champions) || {}; },
 
     async loadProfile() {
       if (!auth) return null;
