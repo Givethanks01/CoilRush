@@ -673,9 +673,34 @@ $('musicBtn').onclick = toggleMusic;
 
 // sound settings popover
 const panel = $('audioPanel'), audioBtn = $('audioBtn');
-function setPanel(open) { panel.hidden = !open; audioBtn.setAttribute('aria-expanded', String(open)); }
+// The panel lives at page level (the header row scrolls and fades its edges, which would clip it)
+// and is placed under the gear button each time it opens.
+document.body.append(panel);
+function placePanel() {
+  const r = audioBtn.getBoundingClientRect();
+  panel.style.top = Math.round(Math.max(r.bottom, document.querySelector('.top').getBoundingClientRect().bottom) + 8) + 'px';
+  panel.style.right = Math.max(16, Math.round(innerWidth - r.right)) + 'px';
+  panel.style.left = 'auto';
+}
+function setPanel(open) {
+  panel.hidden = !open; audioBtn.setAttribute('aria-expanded', String(open));
+  if (open) placePanel();
+}
+addEventListener('resize', () => { if (!panel.hidden) placePanel(); });
+addEventListener('scroll', () => { if (!panel.hidden) placePanel(); }, { passive: true });
+// Fade the edges of the scrollable badge row so it's obvious there is more to see.
+const topRow = document.querySelector('.top-right');
+function updateTopFade() {
+  const scrollable = topRow.scrollWidth > topRow.clientWidth + 2;
+  topRow.classList.toggle('fade-l', scrollable && topRow.scrollLeft > 2);
+  topRow.classList.toggle('fade-r', scrollable && topRow.scrollLeft + topRow.clientWidth < topRow.scrollWidth - 2);
+}
+topRow.addEventListener('scroll', updateTopFade, { passive: true });
+addEventListener('resize', updateTopFade);
+new MutationObserver(updateTopFade).observe(topRow, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden'], characterData: true });
+setTimeout(updateTopFade, 300);
 audioBtn.onclick = e => { e.stopPropagation(); unlockAudio(); setPanel(panel.hidden); };
-document.addEventListener('pointerdown', e => { if (!panel.hidden && !e.target.closest('.audio-wrap')) setPanel(false); });
+document.addEventListener('pointerdown', e => { if (!panel.hidden && !panel.contains(e.target) && !e.target.closest('.audio-wrap')) setPanel(false); });
 addEventListener('keydown', e => { if (e.code === 'Escape' && !panel.hidden) { setPanel(false); e.stopImmediatePropagation(); } }, true);
 function syncVolumeUI() {
   $('musicVol').value = profile.musicVol; $('musicVolOut').textContent = profile.musicVol;

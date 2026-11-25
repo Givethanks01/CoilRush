@@ -276,7 +276,7 @@ kbd {
 
 /* sound settings popover */
 .audio-wrap { position: relative; }
-.audio-panel { position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: 270px; padding: 14px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 20px 40px -12px rgba(0, 0, 0, .6); display: grid; gap: 10px; }
+.audio-panel { position: fixed; z-index: 40; width: 270px; padding: 14px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 20px 40px -12px rgba(0, 0, 0, .6); display: grid; gap: 10px; }
 .ap-title { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 16px; }
 .ap-row { display: grid; grid-template-columns: 34px 54px minmax(0, 1fr) 30px; align-items: center; gap: 8px; }
 .ap-row label { font-size: 13.5px; font-weight: 600; }
@@ -322,7 +322,7 @@ input[type="range"] { width: 100%; accent-color: var(--coral); height: 22px; cur
   .level-grid { gap: 5px; } .levels-head h2 { font-size: 20px; }
   .level-info { padding: 7px 10px; font-size: 12px; } .level-info b { font-size: 14px; }
 }
-@media (max-width: 440px) { .audio-panel { position: fixed; left: 16px; right: 16px; top: 64px; width: auto; } }
+
 
 /* options panel: sections + control picker */
 .ap-section { margin: 4px 0 -2px; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
@@ -392,8 +392,17 @@ h3.sub { margin: 4px 0 -4px; font-size: 12px; font-weight: 700; text-transform: 
 .online, .acct-btn, .lvl, .streak { white-space: nowrap; flex: none; }
 @media (max-width: 560px) {
   .top { flex-wrap: wrap; row-gap: 10px; }
-  .top-right { width: 100%; justify-content: flex-end; gap: 7px; }
-  .top-right .online { margin-right: auto; }
+  /* The badge row scrolls sideways on narrow screens, starting from the left so the online
+     count is always the first thing you see. */
+  .top-right { width: 100%; justify-content: flex-start; gap: 7px; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
+    padding-block: 7px 3px; margin-block: -7px -3px; }
+  .top-right::-webkit-scrollbar { display: none; }
+  .top-right > * { flex: none; }
+  .top-right.fade-r { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+  .top-right.fade-l { -webkit-mask-image: linear-gradient(to right, transparent, #000 28px); mask-image: linear-gradient(to right, transparent, #000 28px); }
+  .top-right.fade-l.fade-r { -webkit-mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
+  .audio-panel { left: 16px !important; right: 16px !important; width: auto; }
 }
 #acctOut, #acctIn { display: grid; gap: 12px; }
 #acctOut h2 { margin-top: 4px; }
