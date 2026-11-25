@@ -150,6 +150,14 @@ async function initNetlify() {
     authFns.forEach(fn => { try { fn(a ? a.user : null); } catch (e) {} });
   }
 
+  // service worker + push helpers
+  const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && window.isSecureContext;
+  let swReg = null;
+  const swReady = async () => swReg || (swReg = await navigator.serviceWorker.register('/sw.js').then(() => navigator.serviceWorker.ready));
+  const currentSub = async () => { if (!pushSupported()) return null; try { return await (await swReady()).pushManager.getSubscription(); } catch (e) { return null; } };
+  const b64ToBytes = b64 => { const p = '='.repeat((4 - (b64.length % 4)) % 4), raw = atob((b64 + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(raw, c => c.charCodeAt(0)); };
+  if ('serviceWorker' in navigator && window.isSecureContext) swReady().catch(() => {});
+
   let chain = Promise.resolve(), saveTimer = null, pending = null;
   const api = {
     kind: 'netlify', sample: null, hasBoard: true, hasLevelsBoard: true, hasLive: true, hasRoom: true,
@@ -160,7 +168,11 @@ async function initNetlify() {
 
       async login(username, password) { const r = await call('login', { method: 'POST', body: { username, password } }); setAuth(r); return r.user; },
       async register(username, password) { const r = await call('register', { method: 'POST', body: { username, password } }); setAuth(r); return r.user; },
-      logout() { setAuth(null); },
+      async logout() {
+        // This device should stop getting the old account's notifications.
+        try { const sub = await currentSub(); if (sub && auth) await call('push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }); } catch (e) {}
+        setAuth(null);
+      },
       onChange(fn) { authFns.add(fn); },
     },
 
@@ -198,6 +210,49 @@ async function initNetlify() {
       return plus;
     },
     get user() { return auth ? auth.user : null; },
+
+    // Push notifications (challenges). state(): 'unsupported' | 'ios-install' | 'denied' | 'on' | 'off'
+    push: {
+      async state() {
+        const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+        if (!pushSupported()) return ios && !standalone ? 'ios-install' : 'unsupported';
+        if (Notification.permission === 'denied') return 'denied';
+        return (await currentSub()) && Notification.permission === 'granted' && LS.get('coilrush.push') === (auth && auth.user.id) ? 'on' : 'off';
+      },
+      async enable() {
+        if (!pushSupported()) throw new Error('This browser cannot show notifications.');
+        if (!auth) throw new Error('Sign in first.');
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') throw new Error(perm === 'denied' ? 'Notifications are blocked. Allow them for this site in your browser settings.' : 'Notifications were not turned on.');
+        const reg = await swReady();
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+          const { publicKey } = await call('push/key');
+          try { sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(publicKey) }); }
+          catch (e) { throw new Error("This browser couldn't set up notifications. Check that notifications are allowed for this site, then try again."); }
+        }
+        await call('push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+        LS.set('coilrush.push', auth.user.id);
+        return true;
+      },
+      async disable() {
+        const sub = await currentSub();
+        if (sub) { try { if (auth) await call('push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }); } catch (e) {} await sub.unsubscribe().catch(() => {}); }
+        LS.set('coilrush.push', null);
+      },
+      test: () => call('push/test', { method: 'POST' }),
+      // After signing in on a device that already allowed notifications, move them to this account.
+      async adopt() {
+        if (!auth || !pushSupported() || Notification.permission !== 'granted') return false;
+        const sub = await currentSub(); if (!sub) return false;
+        try { await call('push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } }); LS.set('coilrush.push', auth.user.id); return true; } catch (e) { return false; }
+      },
+      async showLocal(title, body) {   // fallback while the tab is in the background
+        if (!pushSupported() || Notification.permission !== 'granted') return;
+        try { (await swReady()).showNotification(title, { body, icon: '/icons/icon-192.png', badge: '/icons/badge-72.png', tag: 'local', data: { url: '/#challenges' } }); } catch (e) {}
+      },
+    },
 
     // Head-to-head challenges (need an account)
     hasChallenges: true,

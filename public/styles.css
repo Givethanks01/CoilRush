@@ -490,3 +490,18 @@ h3.sub { margin: 4px 0 -4px; font-size: 12px; font-weight: 700; text-transform: 
 .ch-result.loss { color: var(--coral); font-weight: 700; }
 .ch-empty { margin: 0; font-size: 12.5px; color: var(--muted); }
 .ch-status { margin: -4px 0 0; padding: 8px 12px; border-radius: 10px; font-size: 13px; background: rgba(255, 201, 74, .1); color: var(--text); text-align: center; line-height: 1.45; }
+
+/* notifications */
+.notif-row { display: flex; align-items: center; gap: 8px; }
+.notif-state { flex: 1; font-size: 13.5px; font-weight: 600; }
+.notif-state.on { color: var(--mint); }
+.notif-state.blocked { color: var(--coral); }
+.notif-banner { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px 34px 12px 12px; border-radius: 14px;
+  background: linear-gradient(135deg, rgba(198, 162, 255, .16), rgba(108, 184, 255, .1)); border: 1px solid rgba(198, 162, 255, .4); }
+.nb-text { display: grid; gap: 2px; min-width: 0; }
+.nb-text b { font-size: 14px; }
+.nb-text span { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.notif-banner .btn.primary { padding: 8px 14px; font-size: 13px; }
+.notif-banner.no-btn { grid-template-columns: 1fr; }
+.nb-x { position: absolute; top: 4px; right: 4px; width: 28px; height: 28px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; }
+.nb-x:hover { color: var(--text); background: rgba(255, 255, 255, .06); }

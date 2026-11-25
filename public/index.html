@@ -1,6 +1,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Coil Rush</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0f1428">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Coil Rush">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Figtree:wght@400;500;600;700&display=swap">
@@ -54,6 +61,15 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7H5V3M5 7a8 8 0 1 1-1 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Turn</button>
             </div>
           <p class="ap-hint" id="ctlHint">Shown under the board on touch screens. Keyboard and swipe always work.</p>
+          <div id="notifSection" class="notif-section" hidden>
+            <p class="ap-section sep">Notifications</p>
+            <div class="notif-row">
+              <span class="notif-state" id="notifState">Off</span>
+              <button class="btn small-btn" id="notifTest" hidden>Send a test</button>
+              <button class="btn small-btn" id="notifToggle">Turn on</button>
+            </div>
+            <p class="ap-hint" id="notifHint">Get a notification when someone challenges you, even when the game is closed.</p>
+          </div>
           <p class="ap-hint ap-version" id="appVersion">Coil Rush</p>
         </div>
       </div>
@@ -239,6 +255,11 @@
 
       <div class="panel" id="tab-challenges" role="tabpanel" hidden>
         <div class="panel-head"><h2>Challenges</h2><span class="muted" id="chUpdated"></span></div>
+        <div class="notif-banner" id="notifBanner" hidden>
+          <div class="nb-text"><b>Never miss a challenge</b><span id="notifBannerText">Get a notification on this device when someone challenges you.</span></div>
+          <button class="btn primary" id="notifBannerBtn">Turn on</button>
+          <button class="nb-x" id="notifBannerX" aria-label="Hide this">×</button>
+        </div>
         <div class="ch-invite" id="chInvite" hidden></div>
         <div class="ch-guest" id="chGuest" hidden>
           <p>Challenge other players to a race: same board, first to the target score. Create a FREE account to start.</p>

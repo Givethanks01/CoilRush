@@ -5,6 +5,7 @@
 // sessions are HMAC-signed tokens. Set SESSION_SECRET in Netlify's environment variables to
 // pin the signing key; if it's missing, a random key is generated once and kept in Blobs.
 import { getStore } from '@netlify/blobs';
+import webpush from 'web-push';
 import { scryptSync, randomBytes, createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 
 export const config = { path: '/api/*' };
@@ -354,6 +355,61 @@ async function claim(req) {
   return json({ ok: false, plus: await hasPlus(s.id, s.name) });
 }
 
+// ---------- push notifications ----------
+// Keys are generated once and kept in Blobs, so notifications work with no setup. To use your
+// own keys instead, set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY (and optionally VAPID_SUBJECT).
+let vapidCache = null;
+async function vapid() {
+  if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) return { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY };
+  if (vapidCache) return vapidCache;
+  const meta = store('meta');
+  let v = await meta.get('vapid', { type: 'json' });
+  if (!v) { await meta.setJSON('vapid', webpush.generateVAPIDKeys(), { onlyIfNew: true }); v = await meta.get('vapid', { type: 'json' }); }
+  return (vapidCache = v);
+}
+const pushSubject = () => process.env.VAPID_SUBJECT || (process.env.URL && process.env.URL.startsWith('https://') ? process.env.URL : 'mailto:notifications@coilrush.app');
+const validSub = sub => sub && typeof sub.endpoint === 'string' && /^https:\/\//.test(sub.endpoint) && sub.endpoint.length < 1000
+  && sub.keys && typeof sub.keys.p256dh === 'string' && typeof sub.keys.auth === 'string' && sub.keys.p256dh.length < 200 && sub.keys.auth.length < 100;
+
+// Send a notification to every device a player has turned notifications on for. Never throws.
+async function notify(userId, payload) {
+  try {
+    const subs = (await store('push').get('u/' + userId, { type: 'json' })) || [];
+    if (!subs.length) return;
+    const keys = await vapid();
+    const dead = [];
+    await Promise.allSettled(subs.map(sub => webpush.sendNotification(sub, JSON.stringify(payload), {
+      TTL: 24 * 3600, urgency: 'high', timeout: 5000,
+      vapidDetails: { subject: pushSubject(), publicKey: keys.publicKey, privateKey: keys.privateKey },
+    }).catch(e => { if (e && (e.statusCode === 404 || e.statusCode === 410)) dead.push(sub.endpoint); else console.warn('[push] send failed', e && e.statusCode, e && e.body); })));
+    if (dead.length) await mutate('push', 'u/' + userId, list => list.filter(x => !dead.includes(x.endpoint)), []);
+  } catch (e) { console.warn('[push] notify error', e && e.message); }
+}
+async function pushKey() { return json({ publicKey: (await vapid()).publicKey }); }
+async function pushSubscribe(req) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in to turn on notifications.');
+  const { subscription } = await body(req, 3000);
+  if (!validSub(subscription)) return fail(400, 'That notification subscription is not valid.');
+  const clean = { endpoint: subscription.endpoint, keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth } };
+  await mutate('push', 'u/' + s.id, list => [clean, ...list.filter(x => x.endpoint !== clean.endpoint)].slice(0, 6), []);
+  return json({ ok: true });
+}
+async function pushUnsubscribe(req) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in first.');
+  const { endpoint = '' } = await body(req, 2000);
+  await mutate('push', 'u/' + s.id, list => (list.some(x => x.endpoint === endpoint) ? list.filter(x => x.endpoint !== endpoint) : undefined), []);
+  return json({ ok: true });
+}
+async function pushTest(req) {
+  const s = await session(req);
+  if (!s) return fail(401, 'Sign in first.');
+  await notify(s.id, { title: 'Notifications are on', body: "You'll hear about it here when someone challenges you.", url: '/#challenges', tag: 'test' });
+  return json({ ok: true });
+}
+const fmt = n => Number(n).toLocaleString('en-US');
+
 // ---------- challenges ----------
 // A challenge: reach `target` points in one Endless run on a shared seed. Fastest time to the
 // target wins; it ends when both players have hit it or 24h after it was accepted (then the
@@ -394,6 +450,16 @@ async function updateChallenge(id, fn) {
     await pushFeed(w
       ? { id: w, name: names[w], mode: 'challenge', vs: names[loser], target: doc.target, reach: doc.results[w]?.reach ?? null, at: Date.now() }
       : { id: doc.from.id, name: doc.from.name, mode: 'challenge', vs: doc.to.name, target: doc.target, draw: true, at: Date.now() });
+    const t = fmt(doc.target);
+    if (w) {
+      const wr = doc.results[w]?.reach;
+      await Promise.all([
+        notify(w, { title: 'You won the challenge! 👑', body: `You beat ${names[loser]} to ${t}${wr != null ? ` in ${wr}s` : ''}.`, url: '/#challenges', tag: 'ch-' + doc.id }),
+        notify(loser, { title: `${names[w]} won the challenge`, body: `${names[w]} beat you to ${t}. Fancy a rematch?`, url: '/#challenges', tag: 'ch-' + doc.id }),
+      ]);
+    } else {
+      await Promise.all([doc.from.id, doc.to.id].map(id => notify(id, { title: 'Challenge ended in a draw', body: `Your ${t} challenge was a draw. Go again?`, url: '/#challenges', tag: 'ch-' + doc.id })));
+    }
     if (w) await mutate('scores', w, d => ({ endless: 0, daily: 0, dailyDay: '', stars: 0, cleared: 0, runs: 0, lastAt: 0, ...d, id: w, name: names[w], challengeWins: (d.challengeWins || 0) + 1 }), {});
   }
   return doc;
@@ -423,7 +489,10 @@ async function createChallenge(req) {
   const doc = { id, target, status: 'pending', from: { id: s.id, name: s.name }, to: toUser, createdAt: now, expiresAt: now + CH_PENDING_MS, results: {} };
   await store('challenges').setJSON('c/' + id, doc, { onlyIfNew: true });
   await indexChallenge(s.id, id);
-  if (toUser) await indexChallenge(toUser.id, id);
+  if (toUser) {
+    await indexChallenge(toUser.id, id);
+    await notify(toUser.id, { title: "You've been challenged! ⚔️", body: `${s.name} challenged you to hit ${fmt(target)} points. Fastest time wins. Tap to accept.`, url: '/#challenges', tag: 'ch-' + id });
+  }
   return json({ challenge: chView(doc) }, 201);
 }
 
@@ -450,6 +519,8 @@ async function challengeAction(req, action) {
     }
   });
   if (wasOpen) await indexChallenge(s.id, id);
+  if (action === 'accept' && doc.status === 'active')
+    await notify(doc.from.id, { title: 'Challenge accepted', body: `${s.name} accepted your ${fmt(doc.target)} challenge. Game on!`, url: '/#challenges', tag: 'ch-' + id });
   return json({ challenge: chView(doc) });
 }
 
@@ -461,14 +532,21 @@ async function challengeResult(req) {
   const score = int(b.score, 5_000_000), seconds = Number.isFinite(b.seconds) ? Math.max(0, b.seconds) : 0;
   const reach = b.reach == null ? null : Number(b.reach);
   if (score > 80 + seconds * 400) return fail(422, 'That score could not be verified.');
+  let improved = null;
   const doc = await updateChallenge(b.id, c => {
+    improved = null;
     if (c.status !== 'active' || !c.to || ![c.from.id, c.to.id].includes(s.id)) return { error: [409, 'This challenge is not running.'] };
     if (Date.now() > c.deadline + 120e3) return { error: [409, 'This challenge has ended.'] };
     let r = reach;
     if (r != null && !(Number.isFinite(r) && r > 0 && r <= seconds + 0.5 && r >= (c.target - 80) / 400 && score >= c.target)) r = null;
     const cur = c.results[s.id] || { best: 0, reach: null, tries: 0 };
+    if (r != null && (cur.reach == null || r < cur.reach)) improved = Math.round(r * 10) / 10;
     c.results[s.id] = { best: Math.max(cur.best || 0, score), reach: r == null ? cur.reach : cur.reach == null ? Math.round(r * 10) / 10 : Math.min(cur.reach, Math.round(r * 10) / 10), tries: (cur.tries || 0) + 1 };
   });
+  if (improved != null && doc.status === 'active') {
+    const opp = doc.from.id === s.id ? doc.to : doc.from;
+    await notify(opp.id, { title: `${s.name} set a time: ${improved}s`, body: `${s.name} hit ${fmt(doc.target)} in ${improved}s. Can you beat it?`, url: '/#challenges', tag: 'ch-' + doc.id });
+  }
   return json({ challenge: chView(doc) });
 }
 
@@ -534,6 +612,10 @@ export default async (req) => {
       case 'POST log': return await clientLog(req);
       case 'GET config': return await publicConfig();
       case 'GET claim': return await claimStatus(url);
+      case 'GET push/key': return await pushKey();
+      case 'POST push/subscribe': return await pushSubscribe(req);
+      case 'POST push/unsubscribe': return await pushUnsubscribe(req);
+      case 'POST push/test': return await pushTest(req);
       case 'GET challenges': return await listChallenges(req);
       case 'POST challenges': return await createChallenge(req);
       case 'GET challenge': return await getChallenge(url);

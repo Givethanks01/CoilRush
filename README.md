@@ -116,6 +116,26 @@ Players can challenge each other to a race to **500, 1,000, 2,000 or 3,000 point
 - **Limits:** results feed the Live feed ("Bob beat Ann to 1,000 in 31.5s") and a **Challenge wins** count on profiles. Each player can have up to 5 open challenges, and unaccepted invites expire after 48 hours.
 - **Fair play:** scores and times are checked by the server, so impossible results are rejected.
 
+## Notifications
+
+Players get **push notifications** on their phone or computer, even when the game is closed:
+
+| When | Who gets it | Example |
+|---|---|---|
+| Someone challenges you | The challenged player | "You've been challenged! ⚔️ Slimzy169 challenged you to hit 1,000 points." |
+| Your challenge is accepted | The challenger | "GiveThanks accepted your 1,000 challenge. Game on!" |
+| Your opponent sets a new best time | The other player | "Slimzy169 set a time: 31.5s. Can you beat it?" |
+| A challenge is decided | Both players | "You won the challenge! 👑" / "Slimzy169 won the challenge" |
+
+Tapping a notification opens the game on the Challenges tab.
+
+- **Turning it on:** a **Never miss a challenge** banner in the Challenges tab, or **Options → Notifications** (which also has **Send a test**).
+- **Accounts:** notifications follow the account, not the device. Signing out stops them on that device, and signing in moves them to the new account.
+- **iPhone / iPad:** Apple only allows web notifications for sites added to the Home Screen (iOS 16.4 or later). The game detects this and tells players: Share → **Add to Home Screen**, open Coil Rush from there, then turn notifications on. The site ships a web-app manifest and icons for this.
+- **Fallbacks:** while the game is open in a background tab, the tab title shows a count, like "(2) Coil Rush", and a notification appears even without push set up.
+- **No setup needed:** the notification keys (VAPID) are generated once and stored in Netlify Blobs. To use your own, set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and optionally `VAPID_SUBJECT` (a `mailto:` or `https:` contact). Without them, the site's own URL is used as the contact.
+- **Devices:** each player can have up to 6 devices. Devices that stop accepting notifications are removed automatically.
+
 ## Crowns
 
 The **#1 player on each leaderboard** (Today, All-time and Levels) gets a gold crown. It appears:
@@ -146,10 +166,12 @@ The **#1 player on each leaderboard** (Today, All-time and Levels) gets a gold c
 ```
 coil-rush/
   netlify.toml                 Publish dir, functions dir, security headers
-  package.json                 One dependency: @netlify/blobs
+  package.json                 Dependencies: @netlify/blobs, web-push
   netlify/functions/api.mjs    The whole backend, served at /api/*
   public/
     index.html, styles.css
+    sw.js            Service worker: shows push notifications, opens the game when one is tapped
+    manifest.webmanifest, icons/   Installable web app (needed for iPhone notifications)
     src/
       main.js        App shell: states, game loop, input, HUD, panels, accounts UI
       game.js        Pure simulation (walls, portals, rocks, combos, fever)
@@ -177,6 +199,10 @@ coil-rush/
 | `POST /api/presence` `{cid, status}` | – | Heartbeat; returns `{online, playing}` |
 | `GET /api/config` | – | Whether Plus is on, plus the payment link and price |
 | `GET /api/claim?c=` | – | Whether a guest purchase has been paid |
+| `GET /api/push/key` | – | The public key the browser needs to subscribe |
+| `POST /api/push/subscribe` `{subscription}` | ✓ | Turns on notifications for this device |
+| `POST /api/push/unsubscribe` `{endpoint}` | ✓ | Turns them off for this device |
+| `POST /api/push/test` | ✓ | Sends a test notification |
 | `GET /api/challenges` | ✓ | Your challenges, with finished ones settled automatically |
 | `POST /api/challenges` `{to?, target}` | ✓ | Creates a challenge (to a username, or an open link if `to` is empty) |
 | `GET /api/challenge?id=` | – | Public view of one challenge (for invite links) |
@@ -220,6 +246,7 @@ coil-rush/
 
 ## Changelog
 
+- **v0.7**: Push notifications for challenges (challenged, accepted, new best time, result), a service worker, an installable web app (manifest + icons), an iPhone Home Screen guide, tab-title counts and a background-tab fallback.
 - **v0.6**: Challenges (500/1,000/2,000/3,000 races on a shared seed, by username or link, notifications, results in the feed, challenge wins on profiles) and crowns for every #1.
 - **v0.5**:
   - Score card image sharing

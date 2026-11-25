@@ -754,7 +754,7 @@ function renderAcct() {
 }
 $('acctBtn').onclick = () => { renderAcct(); if (!online.auth.user) setAcctMode(acctMode); showModal('acctModal'); };
 $('btnGuestSignIn').onclick = () => { setAcctMode('register'); renderAcct(); showModal('acctModal'); };
-$('acctLogout').onclick = () => { online.auth.logout(); closeModal(); toast('Signed out. Progress stays on this device.'); };
+$('acctLogout').onclick = async () => { await online.auth.logout(); closeModal(); toast('Signed out. Progress stays on this device.'); };
 $('acctProfile').onclick = () => { const u = online.auth.user; closeModal(); if (u) openPlayer(u.name); };
 $('acctForm').addEventListener('submit', async e => {
   e.preventDefault();
@@ -806,6 +806,7 @@ async function onAuthChange(user) {
       toast('Plus unlocked on your account: levels 6 to 15 and the exclusive skins are yours', 'gold');
     }
     renderPlusUI();
+    if (online.push) { await online.push.adopt(); renderNotif(); }
     if (acceptAfterLogin) { const id = acceptAfterLogin; acceptAfterLogin = null; chAct('accept', id, doc => { chInvite = null; startChallenge(doc); }); }
     else refreshChallenges();
     if (buyAfterLogin && !isPlus()) { buyAfterLogin = false; openPlus('Your account is ready'); }
@@ -813,6 +814,7 @@ async function onAuthChange(user) {
     P.useKey(P.GUEST_KEY);
     applyProfile(P.loadLocal());
     renderPlusUI();
+    renderNotif(); document.title = 'Coil Rush';
   }
   renderBoard();
 }
@@ -1178,6 +1180,7 @@ function renderChallenges() {
   if (!chList.length) lists.append(el('p', 'ch-empty', 'No challenges yet. Pick a target above and challenge someone from the leaderboard, or send a link to a friend.'));
   const waiting = groups[0][1].length + chList.filter(c => c.status === 'active' && !(c.results[me] && c.results[me].reach != null)).length;
   $('chBadge').hidden = !waiting; $('chBadge').textContent = waiting;
+  document.title = waiting ? `(${waiting}) Coil Rush` : 'Coil Rush';
   $('chUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 async function refreshChallenges() {
@@ -1188,7 +1191,11 @@ async function refreshChallenges() {
     if (chKnown) {
       for (const c of list) {
         const prev = chKnown.get(c.id);
-        if (!prev && c.status === 'pending' && c.from.id !== me) { toast(`${c.from.name} challenged you to ${c.target.toLocaleString()}!`, 'gold'); sfx.goldenSpawn(); }
+        if (!prev && c.status === 'pending' && c.from.id !== me) {
+          toast(`${c.from.name} challenged you to ${c.target.toLocaleString()}!`, 'gold'); sfx.goldenSpawn();
+          // Tab in the background and push isn't set up on this device: show a notification from the page.
+          if (document.hidden && notifState !== 'on' && online.push) online.push.showLocal("You've been challenged!", `${c.from.name} challenged you to hit ${c.target.toLocaleString()} points.`);
+        }
         if (prev && prev !== 'done' && c.status === 'done') {
           const opp = c.from.id === me ? c.to : c.from;
           toast(c.winner === me ? `You beat ${opp.name} to ${c.target.toLocaleString()}!` : c.winner ? `${opp.name} beat you to ${c.target.toLocaleString()}` : `Your challenge with ${opp.name} was a draw`, c.winner === me ? 'gold' : '');
@@ -1223,6 +1230,12 @@ function renderInvite() {
 }
 
 function openChallengeHash() {
+  if (location.hash === '#challenges' && online && online.challenges) {
+    history.replaceState(null, '', location.pathname + location.search);
+    document.querySelector('.tabs [data-tab="challenges"]').click();
+    $('tab-challenges').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
   const m = location.hash.match(/^#ch-([A-Za-z0-9_-]{8,24})$/);
   if (!m || !online || !online.challenges) return;
   history.replaceState(null, '', location.pathname + location.search);
@@ -1233,6 +1246,55 @@ function openChallengeHash() {
     $('chInvite').scrollIntoView({ behavior: 'smooth', block: 'center' });
   }).catch(() => toast('That challenge link no longer works.'));
 }
+
+// ---------- notifications ----------
+let notifState = 'unsupported';
+const NOTIF_TEXT = {
+  on: ['On for this device', "You'll get a notification when someone challenges you, accepts, sets a time or wins."],
+  off: ['Off', 'Get a notification when someone challenges you, even when the game is closed.'],
+  'ios-install': ['Needs one step on iPhone', 'Tap the Share button, then "Add to Home Screen". Open Coil Rush from your Home Screen and turn notifications on there.'],
+  denied: ['Blocked', 'Notifications are blocked for this site. Allow them in your browser or phone settings, then come back here.'],
+  guest: ['Off', 'Create a FREE account to get a notification when someone challenges you.'],
+};
+async function renderNotif() {
+  if (!online || !online.push) return;
+  const signedIn = !!myId();
+  notifState = signedIn ? await online.push.state() : 'guest';
+  $('notifSection').hidden = notifState === 'unsupported';
+  const [label, hint] = NOTIF_TEXT[notifState] || NOTIF_TEXT.off;
+  $('notifState').textContent = label;
+  $('notifState').className = 'notif-state' + (notifState === 'on' ? ' on' : notifState === 'denied' ? ' blocked' : '');
+  $('notifHint').textContent = hint;
+  $('notifToggle').hidden = notifState === 'ios-install' || notifState === 'denied';
+  $('notifToggle').textContent = notifState === 'on' ? 'Turn off' : notifState === 'guest' ? 'Create account' : 'Turn on';
+  $('notifTest').hidden = notifState !== 'on';
+  // banner in the Challenges tab
+  let dismissed = false; try { dismissed = localStorage.getItem('coilrush.notifBannerHidden') === '1'; } catch (e) {}
+  const showBanner = signedIn && !dismissed && (notifState === 'off' || notifState === 'ios-install');
+  $('notifBanner').hidden = !showBanner;
+  $('notifBanner').classList.toggle('no-btn', notifState === 'ios-install');
+  $('notifBannerBtn').hidden = notifState === 'ios-install';
+  $('notifBannerText').textContent = notifState === 'ios-install' ? 'On iPhone: tap Share, then "Add to Home Screen". Open Coil Rush from there and turn notifications on.' : 'Get a notification on this device when someone challenges you.';
+}
+async function turnOnNotif() {
+  if (!myId()) { openRegister('Create a FREE account to get challenge notifications.', false); return; }
+  try { await online.push.enable(); toast('Notifications are on. We will let you know when you are challenged.', 'mint'); sfx.click(); }
+  catch (e) { toast(e.message || 'Could not turn on notifications.'); }
+  renderNotif();
+}
+$('notifToggle').onclick = async () => {
+  if (notifState === 'on') { await online.push.disable(); toast('Notifications turned off for this device.'); renderNotif(); }
+  else turnOnNotif();
+};
+$('notifBannerBtn').onclick = turnOnNotif;
+$('notifBannerX').onclick = () => { try { localStorage.setItem('coilrush.notifBannerHidden', '1'); } catch (e) {} $('notifBanner').hidden = true; };
+$('notifTest').onclick = async () => {
+  try { await online.push.test(); toast('Test sent. It should pop up in a moment.', 'mint'); } catch (e) { toast(e.message || 'Could not send a test.'); }
+};
+// A tapped notification focuses an open game tab: jump to Challenges.
+if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', ev => {
+  if (ev.data && ev.data.type === 'open') { document.querySelector('.tabs [data-tab="challenges"]')?.click(); refreshChallenges(); }
+});
 
 // ---------- coach (Claude) ----------
 $('btnCoach').onclick = async () => {
@@ -1293,6 +1355,7 @@ initOnline().then(async api => {
   if (api.auth) {
     $('tabBtn-live').hidden = false; $('lbLevels').hidden = false; $('tabBtn-challenges').hidden = false;
     refreshChallenges(); setInterval(refreshChallenges, 20000);
+    renderNotif();
     openChallengeHash();
     addEventListener('hashchange', openChallengeHash);   // link opened in a tab that already has the game
     renderAcct();
