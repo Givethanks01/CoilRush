@@ -6,13 +6,13 @@ let KEY = GUEST_KEY;   // which local slot the current player's progress lives i
 export const keyFor = user => (user ? 'coilrush.profile.u.' + user.id : GUEST_KEY);
 export function useKey(k) { KEY = k || GUEST_KEY; }
 export const currentKey = () => KEY;
-export const SETTINGS = ['sound', 'music', 'musicVol', 'sfxVol', 'controls'];
+export const SETTINGS = ['sound', 'music', 'musicVol', 'sfxVol', 'controls', 'graphics'];
 
 export const defaultProfile = () => ({
   xp: 0, games: 0, eaten: 0,
   best: { endless: 0, daily: 0, zen: 0 },
   dailyDay: '', dailyBest: 0,
-  skin: 'ember', sound: true, music: true, musicVol: 70, sfxVol: 80, controls: 'dpad',
+  skin: 'ember', sound: true, music: true, musicVol: 70, sfxVol: 80, controls: 'dpad', graphics: 'auto',
   levels: { unlocked: 1, best: {}, stars: {} },
   streak: 0, lastDay: '',
   mission: { day: '', progress: {}, done: {} },
@@ -40,6 +40,7 @@ export function sanitize(p) {
   p.xp = num(p.xp); p.games = num(p.games); p.eaten = num(p.eaten); p.dailyBest = num(p.dailyBest);
   for (const k of ['endless', 'daily', 'zen']) p.best[k] = num(p.best[k]);
   if (!['dpad', 'stick', 'turn'].includes(p.controls)) p.controls = 'dpad';
+  if (!['auto', 'high', 'smooth'].includes(p.graphics)) p.graphics = 'auto';
   p.streak = num(p.streak);
   if (typeof p.music !== 'boolean') p.music = true;
   const vol = (v, d) => (Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : d);

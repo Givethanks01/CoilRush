@@ -56,6 +56,8 @@ function show(id, on) { $(id).hidden = !on; }
 function setState(s) {
   const prevState = state;
   state = s;
+  document.body.classList.toggle('in-run', s === 'playing' || s === 'ready' || s === 'paused');
+  if (s !== 'menu') guardBack();
   if (s === 'over') overAt = performance.now();
   if (s === 'paused' && prevState === 'playing') sfx.pause();
   if (s === 'playing' && prevState === 'paused') sfx.resume();
@@ -270,8 +272,16 @@ function frame(now) {
   }
   requestAnimationFrame(frame);
 }
+let frameAvg = 16, frameCount = 0;
 function tick(now) {
   const dt = Math.min(100, now - last); last = now;
+  if (state === 'playing' && profile.graphics === 'auto' && !renderer.lowFx && !document.hidden) {
+    frameAvg = frameAvg * 0.95 + dt * 0.05;
+    if (++frameCount > 120 && frameAvg > 24) {   // under ~40fps for a couple of seconds
+      renderer.setLowFx(true); renderGfx();
+      toast('Switched to Smooth graphics so the game runs better on this device.');
+    }
+  }
   let g = demo, alpha = 0;
   if (state === 'menu' || state === 'select') {
     acc += dt;
@@ -684,7 +694,7 @@ function placePanel() {
 }
 function setPanel(open) {
   panel.hidden = !open; audioBtn.setAttribute('aria-expanded', String(open));
-  if (open) placePanel();
+  if (open) { placePanel(); guardBack(); }
 }
 addEventListener('resize', () => { if (!panel.hidden) placePanel(); });
 addEventListener('scroll', () => { if (!panel.hidden) placePanel(); }, { passive: true });
@@ -736,6 +746,7 @@ addEventListener('pointerdown', () => unlockAudio(), { once: true });
 let openModal = null, acctMode = 'login';
 function showModal(id) {
   if (state === 'playing') setState('paused');
+  guardBack();
   if (openModal && openModal !== id) $(openModal).hidden = true;
   openModal = id; $(id).hidden = false;
   if (id === 'chatModal') return;
@@ -1462,6 +1473,8 @@ async function sendChat(text) {
   }
   renderMsgs();
 }
+$('chatInput').addEventListener('focus', () => setTimeout(() => { const b = $('chatMsgs'); b.scrollTop = b.scrollHeight; }, 300));
+addEventListener('resize', () => { if (openModal === 'chatModal' && document.activeElement === $('chatInput')) { const b = $('chatMsgs'); b.scrollTop = b.scrollHeight; } });
 $('chatForm').addEventListener('submit', e => { e.preventDefault(); const v = $('chatInput').value; $('chatInput').value = ''; sendChat(v); });
 $('chatQuick').querySelectorAll('button').forEach(b => b.onclick = () => sendChat(b.textContent));
 $('chatClose').onclick = closeModal;
@@ -1482,6 +1495,36 @@ $('chatReport').onclick = async () => {
   try { await online.chat.report(chatWith, 'Reported from chat'); toast('Thanks for reporting. We will review it. You can also block this player from the ⋯ menu.'); }
   catch (e) { toast(e.message || 'Could not send the report.'); }
 };
+
+// ---------- graphics ----------
+function renderGfx() {
+  document.querySelectorAll('.gfx-pick button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.gfx === profile.graphics)));
+  $('gfxHint').textContent = profile.graphics === 'auto'
+    ? (renderer.lowFx ? 'Auto picked Smooth for this device.' : "Auto switches to Smooth on phones that can't keep up.")
+    : profile.graphics === 'smooth' ? 'Fewer effects and sharper speed on slower phones.' : 'All glow and particle effects.';
+}
+function applyGfx() { renderer.setLowFx(profile.graphics === 'smooth'); frameAvg = 16; frameCount = 0; renderGfx(); }
+document.querySelectorAll('.gfx-pick button').forEach(b => b.onclick = () => {
+  profile.graphics = b.dataset.gfx; P.saveLocal(profile); online?.saveProfile(profile); sfx.click(); applyGfx();
+});
+applyGfx();
+
+// ---------- Android Back button ----------
+// Keep one extra history entry while anything is open, so Back closes it instead of leaving the game.
+let backGuarded = false;
+function guardBack() { if (!backGuarded) { try { history.pushState({ coilBack: true }, ''); backGuarded = true; } catch (e) {} } }
+function handleBack() {
+  if (!panel.hidden) { setPanel(false); return true; }
+  if (!$('chatMenu').hidden) { $('chatMenu').hidden = true; return true; }
+  if (openModal) { if (openModal === 'chatModal' && chatWith) showInboxView(); else closeModal(); return true; }
+  if (state === 'playing' || state === 'ready') { setState('paused'); return true; }
+  if (state === 'paused' || state === 'over' || state === 'select') { back(); return true; }
+  return false;
+}
+addEventListener('popstate', () => {
+  backGuarded = false;
+  if (handleBack() && (openModal || !panel.hidden || state !== 'menu')) guardBack();
+});
 
 // ---------- coach (Claude) ----------
 $('btnCoach').onclick = async () => {

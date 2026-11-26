@@ -152,6 +152,18 @@ Signed-in players can **message each other directly**.
 
 **About "real time" on Netlify:** Netlify Functions can't hold connections open, so chat checks for new messages frequently instead. Each check is a function call, so watch your usage in Netlify (Usage & billing) as the player count grows. If chat gets busy, the next step is a realtime service (Ably, Pusher, or Supabase Realtime) for instant delivery.
 
+## Android and older phones
+
+- **Back button:** while anything is open, Back closes it instead of leaving the game. That covers Options, Messages (a conversation goes back to the inbox first), Plus and profiles, the level picker, and a running game (which pauses). From the main menu, Back leaves as usual.
+- **Keyboard:** chat uses `interactive-widget=resizes-content`, so Chrome on Android shrinks the page for the keyboard instead of covering the message box.
+- **Forced dark mode:** `color-scheme: dark` stops Samsung Internet and Chrome's automatic dark mode from recolouring the game.
+- **Graphics (Options):**
+  - **Auto** (default) watches frame times during play and switches to Smooth if the phone drops below about 40fps for a couple of seconds.
+  - **Smooth** turns off glow effects, halves particles and renders at 1× pixel density.
+  - **High** always uses full effects.
+- **Older browsers:** fallbacks cover browsers without `dvh`, container queries or `color-mix()` (older Chrome / Samsung Internet), and there's a `roundRect` polyfill for the canvas.
+- **Small screens:** on 320px phones the menu switches to a compact list so all four modes fit. Pull-to-refresh is disabled during a run.
+
 ## Crowns
 
 The **#1 player on each leaderboard** (Today, All-time and Levels) gets a gold crown. It appears:
@@ -267,6 +279,12 @@ coil-rush/
 
 ## Changelog
 
+- **v0.9**: Android support:
+  - The Back button closes panels and pauses runs instead of exiting
+  - The keyboard no longer covers chat
+  - Samsung Internet and Chrome no longer force dark mode on the game
+  - Auto/High/Smooth graphics with automatic switching on slow phones
+  - Fallbacks for older browsers, and a compact menu for 320px screens
 - **v0.8.2**: On iPhones running the game from the Home Screen, content now stays clear of the status bar and home indicator, so the Messages title, close (×) and back buttons are tappable. Close and back buttons are bigger.
 - **v0.8.1**: On phones the header badge row (online count, account, rank, chat, options) scrolls sideways and starts with the online count. Before, items overflowed off the left edge and couldn't be reached. The Options panel now opens at page level, so it's never clipped.
 - **v0.8**: Player-to-player messages (inbox, unread badges, fast refresh while open, push notifications, "Seen", quick replies, block and report, rate limits). Background polling pauses or slows when the tab is hidden.

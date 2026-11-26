@@ -1,4 +1,4 @@
-export const VERSION = '0.8.2';
+export const VERSION = '0.9.0';
 
 // Static game content: skins and their unlock levels, power-up metadata.
 export const SKINS = [

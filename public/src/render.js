@@ -25,14 +25,14 @@ export class Renderer {
   constructor(canvas) {
     this.c = canvas; this.ctx = canvas.getContext('2d');
     this.parts = []; this.floats = []; this.shake = 0; this.flash = 0; this.gulp = 0;
-    this.size = 0; this.dpr = 1; this.cs = 1; this.bg = null;
+    this.size = 0; this.dpr = 1; this.cs = 1; this.bg = null; this.lowFx = false;
     new ResizeObserver(() => this.resize()).observe(canvas);
     this.resize();
   }
 
   resize() {
     const r = this.c.getBoundingClientRect();
-    const dpr = Math.min(2, window.devicePixelRatio || 1), s = Math.max(60, Math.round(r.width));
+    const dpr = this.lowFx ? 1 : Math.min(2, window.devicePixelRatio || 1), s = Math.max(60, Math.round(r.width));
     if (s === this.size && dpr === this.dpr) return;
     this.size = s; this.dpr = dpr; this.cs = s / GRID;
     this.c.width = Math.round(s * dpr); this.c.height = Math.round(s * dpr);
@@ -52,7 +52,10 @@ export class Renderer {
 
   center(x, y) { return [(x + 0.5) * this.cs, (y + 0.5) * this.cs]; }
 
+  setLowFx(on) { if (this.lowFx === on) return; this.lowFx = on; this.size = 0; this.resize(); }
+
   burst(x, y, color, n = 14, speed = 1) {
+    if (this.lowFx) n = Math.ceil(n / 2);
     const [cx, cy] = this.center(x, y);
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2, v = (0.04 + Math.random() * 0.12) * this.cs * speed;
@@ -86,7 +89,7 @@ export class Renderer {
       ctx.save();
       const hue = (time / 6) % 360;
       ctx.strokeStyle = `hsla(${hue}, 95%, 65%, ${0.55 + 0.3 * Math.sin(time / 90)})`;
-      ctx.lineWidth = cs * 0.22; ctx.shadowColor = ctx.strokeStyle; ctx.shadowBlur = cs;
+      ctx.lineWidth = cs * 0.22; ctx.shadowColor = ctx.strokeStyle; ctx.shadowBlur = this.lowFx ? 0 : cs;
       ctx.strokeRect(0, 0, this.size, this.size);
       ctx.restore();
     }
@@ -155,7 +158,7 @@ export class Renderer {
     // head
     const [hx, hy] = pts[0], [dx, dy] = DIRS[g.dir];
     const hr = cs * (0.44 + this.gulp * 0.12);
-    ctx.shadowColor = skinColor(skin, 0, time); ctx.shadowBlur = cs * 0.7;
+    ctx.shadowColor = skinColor(skin, 0, time); ctx.shadowBlur = this.lowFx ? 0 : cs * 0.7;
     ctx.fillStyle = skinColor(skin, 0, time);
     ctx.beginPath(); ctx.arc(hx, hy, hr, 0, 7); ctx.fill();
     ctx.shadowBlur = 0;
@@ -193,7 +196,7 @@ export class Renderer {
     const { ctx, cs } = this;
     const [cx, cy0] = this.center(x, y), cy = cy0 + Math.sin(time / 260 + x) * cs * 0.04, r = cs * 0.3;
     ctx.save();
-    ctx.shadowColor = C.berryB; ctx.shadowBlur = cs * 0.6;
+    ctx.shadowColor = C.berryB; ctx.shadowBlur = this.lowFx ? 0 : cs * 0.6;
     const gr = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, r * 0.1, cx, cy, r);
     gr.addColorStop(0, C.berryA); gr.addColorStop(1, C.berryB);
     ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
@@ -208,7 +211,7 @@ export class Renderer {
     const { ctx, cs } = this;
     const [cx, cy] = this.center(o.x, o.y), pulse = 1 + Math.sin(time / 140) * 0.06, r = cs * 0.33 * pulse;
     ctx.save();
-    ctx.shadowColor = C.gold; ctx.shadowBlur = cs;
+    ctx.shadowColor = C.gold; ctx.shadowBlur = this.lowFx ? 0 : cs;
     const gr = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, r * 0.1, cx, cy, r);
     gr.addColorStop(0, C.goldHi); gr.addColorStop(1, C.gold);
     ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
@@ -224,7 +227,7 @@ export class Renderer {
     const { ctx, cs } = this, info = POWER_INFO[o.kind];
     const [cx, cy] = this.center(o.x, o.y), r = cs * 0.36;
     ctx.save();
-    ctx.shadowColor = info.color; ctx.shadowBlur = cs * 0.8;
+    ctx.shadowColor = info.color; ctx.shadowBlur = this.lowFx ? 0 : cs * 0.8;
     ctx.fillStyle = info.color; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
     ctx.shadowBlur = 0; ctx.fillStyle = C.ink; ctx.strokeStyle = C.ink; ctx.lineWidth = cs * 0.07; ctx.lineCap = 'round';
     const s = r * 0.55;
@@ -273,7 +276,7 @@ export class Renderer {
     const gr = ctx.createRadialGradient(cx, cy, 0, cx, cy, cs * 0.5);
     gr.addColorStop(0, color); gr.addColorStop(0.55, 'rgba(15,20,40,.9)'); gr.addColorStop(1, 'rgba(15,20,40,0)');
     ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(cx, cy, cs * 0.5, 0, 7); ctx.fill();
-    ctx.strokeStyle = color; ctx.lineWidth = cs * 0.08; ctx.shadowColor = color; ctx.shadowBlur = cs * 0.6;
+    ctx.strokeStyle = color; ctx.lineWidth = cs * 0.08; ctx.shadowColor = color; ctx.shadowBlur = this.lowFx ? 0 : cs * 0.6;
     ctx.setLineDash([cs * 0.22, cs * 0.14]); ctx.lineDashOffset = (i % 2 ? -1 : 1) * time / 25;
     ctx.beginPath(); ctx.arc(cx, cy, cs * 0.4, 0, 7); ctx.stroke();
     ctx.setLineDash([]); ctx.lineWidth = cs * 0.05;
